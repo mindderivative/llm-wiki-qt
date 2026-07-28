@@ -1,0 +1,37 @@
+[project]
+name = "llm-wiki"
+version = "0.1.0"
+description = "Local-first, self-maintaining knowledge base engine powered by llama.cpp"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = []
+
+[build-system]
+requires = ["uv_build>=0.11.19,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "pytest>=8.0",
+    "pre-commit>=4.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4"]
+ignore = []
+
+[tool.ruff.lint.isort]
+known-first-party = ["llm_wiki"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "live_llm: marks tests that hit a real local llama-server instance (deselected by default)",
+]
