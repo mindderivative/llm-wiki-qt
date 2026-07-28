@@ -101,6 +101,16 @@ class LintFinding(BaseModel):
     created_at: datetime = Field(default_factory=_utcnow)
 
 
+class VaultInfo(BaseModel):
+    """Identity and location of a created or loaded vault."""
+
+    path: Path
+    name: str
+    description: str = ""
+    version: str = "1.0"
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
 class LLMWikiError(Exception):
     """Base class for every typed exception raised by the llm_wiki engine."""
 
