@@ -67,6 +67,13 @@ class NoteFrontmatter(BaseModel):
     sources: list[str] = Field(default_factory=list)
 
 
+class ExtractedNote(BaseModel):
+    """One entity/concept the LLM identified while compiling a source, with body content."""
+
+    frontmatter: NoteFrontmatter
+    content: str
+
+
 class Chunk(BaseModel):
     """An atomic GEO chunk, belonging to either a queued item or a note."""
 

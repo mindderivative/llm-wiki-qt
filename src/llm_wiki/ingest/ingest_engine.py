@@ -99,6 +99,14 @@ def update_status(
     return _row_to_queue_item(row)
 
 
+def get_queue_item(conn: sqlite3.Connection, item_id: int) -> QueueItem:
+    """Fetches a single queue item by id."""
+    row = conn.execute("SELECT * FROM queue WHERE id = ?", (item_id,)).fetchone()
+    if row is None:
+        raise IngestionError(f"No queue item with id {item_id}")
+    return _row_to_queue_item(row)
+
+
 def list_queue(conn: sqlite3.Connection, status: QueueStatus | None = None) -> list[QueueItem]:
     """Lists queue items, optionally filtered to a single status, oldest first."""
     if status is None:

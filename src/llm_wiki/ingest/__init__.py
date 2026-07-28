@@ -7,13 +7,14 @@ from llm_wiki.ingest.atomizer import (
     shield_assets,
     unshield_assets,
 )
-from llm_wiki.ingest.ingest_engine import enqueue_file, list_queue, update_status
+from llm_wiki.ingest.ingest_engine import enqueue_file, get_queue_item, list_queue, update_status
 
 __all__ = [
     "atomize",
     "count_words",
     "enqueue_file",
     "generate_geo_frontmatter",
+    "get_queue_item",
     "list_queue",
     "shield_assets",
     "unshield_assets",
