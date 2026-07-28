@@ -5,5 +5,17 @@ Everything here is a rebuildable derived store per ARCHITECTURE.md §6 —
 """
 
 from llm_wiki.storage.db import SCHEMA_VERSION, connect, rebuild_from_vault
+from llm_wiki.storage.vector_search import (
+    EMBEDDING_DIMENSIONS,
+    similarity_search,
+    upsert_chunk_embedding,
+)
 
-__all__ = ["SCHEMA_VERSION", "connect", "rebuild_from_vault"]
+__all__ = [
+    "EMBEDDING_DIMENSIONS",
+    "SCHEMA_VERSION",
+    "connect",
+    "rebuild_from_vault",
+    "similarity_search",
+    "upsert_chunk_embedding",
+]
