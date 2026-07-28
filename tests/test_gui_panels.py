@@ -4,13 +4,9 @@ from pathlib import Path
 
 import pytest
 from loguru import logger
-from PySide6.QtCore import QObject
-from PySide6.QtQml import QQmlApplicationEngine
 
 # Importing these registers their @QmlElement types with the QML engine.
 import llm_wiki.gui.app_controller  # noqa: F401
-import llm_wiki.gui.graph_canvas_item  # noqa: F401
-from llm_wiki.gui.app import _QML_DIR
 from llm_wiki.gui.git_controller import GitController
 from llm_wiki.gui.health_controller import HealthController
 from llm_wiki.gui.log_model import LogModel
@@ -206,32 +202,3 @@ def test_health_controller_reflects_lint_findings(qapp, vault_root: Path) -> Non
 
     assert controller.score < 100
     assert controller.isolatedNotes == 1
-
-
-# --- Full app wiring (extends the Phase 15a smoke test with real data) ----
-
-
-def test_opening_a_vault_populates_all_panel_controllers(
-    qapp, vault_root: Path, qtbot
-) -> None:
-    src = vault_root.parent / "doc.txt"
-    src.write_text("hello", encoding="utf-8")
-    conn = connect(vault_root / ".llm-wiki" / "db.sqlite3")
-    enqueue_file(conn, vault_root, src, title="Doc One")
-    conn.close()
-
-    engine = QQmlApplicationEngine()
-    engine.load(str(_QML_DIR / "Main.qml"))
-    assert engine.rootObjects()
-    root = engine.rootObjects()[0]
-    controller = root.findChild(QObject, "appController")
-
-    controller.openVault(str(vault_root))
-
-    queue_model = controller.property("queueModel")
-    git_controller = controller.property("gitController")
-    health_controller = controller.property("healthController")
-
-    assert queue_model.rowCount() == 1
-    assert git_controller.property("isInitialized") is False
-    assert health_controller.property("score") == 100

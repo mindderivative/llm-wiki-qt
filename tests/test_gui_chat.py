@@ -6,14 +6,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QObject
-from PySide6.QtQml import QQmlApplicationEngine
 
 # Importing these registers their @QmlElement types with the QML engine.
 import llm_wiki.gui.app_controller  # noqa: E402, F401
-import llm_wiki.gui.graph_canvas_item  # noqa: E402, F401
 import llm_wiki.gui.log_model  # noqa: E402, F401
-from llm_wiki.gui.app import _QML_DIR
 from llm_wiki.gui.chat_controller import ChatController, ChatMessageModel
 from llm_wiki.llm.client import LlamaClient
 from llm_wiki.vault import create_vault
@@ -153,24 +149,3 @@ def test_chat_worker_failure_surfaces_error_and_resets_busy(
     assert errors and "llama-server unreachable" in errors[0]
     # The user's message is still recorded; no assistant reply was appended.
     assert controller.messages.rowCount() == 1
-
-
-# --- Full QML wiring --------------------------------------------------
-
-
-def test_chat_panel_wired_through_app_controller(qapp, qtbot, vault_root: Path) -> None:
-    engine = QQmlApplicationEngine()
-    engine.load(str(_QML_DIR / "Main.qml"))
-    assert engine.rootObjects()
-    root = engine.rootObjects()[0]
-    app_controller = root.findChild(QObject, "appController")
-    app_controller.openVault(str(vault_root))
-
-    chat_controller = app_controller.property("chatController")
-    chat_controller.configure(str(vault_root), _make_client("Grounded answer."), "test-model")
-
-    chat_controller.sendMessage("What's in this vault?")
-    qtbot.waitUntil(lambda: not chat_controller.property("busy"), timeout=5000)
-
-    messages = chat_controller.property("messages")
-    assert messages.rowCount() == 2

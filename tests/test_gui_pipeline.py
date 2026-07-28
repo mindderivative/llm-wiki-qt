@@ -12,14 +12,10 @@ from types import SimpleNamespace
 
 import openai
 import pytest
-from PySide6.QtCore import QObject
-from PySide6.QtQml import QQmlApplicationEngine
 
 # Importing these registers their @QmlElement types with the QML engine.
 import llm_wiki.gui.app_controller  # noqa: E402, F401
-import llm_wiki.gui.graph_canvas_item  # noqa: E402, F401
 import llm_wiki.gui.log_model  # noqa: E402, F401
-from llm_wiki.gui.app import _QML_DIR
 from llm_wiki.gui.pipeline_adapter import PipelineAdapter
 from llm_wiki.ingest import enqueue_file, get_queue_item
 from llm_wiki.llm.client import LlamaClient
@@ -210,57 +206,3 @@ def test_starting_a_run_while_one_is_active_is_a_no_op(
         "SELECT COUNT(*) FROM queue WHERE status = 'completed'"
     ).fetchone()[0]
     assert completed == 1
-
-
-# --- Toolbar wiring (through the real QML scene) ---------------------------
-
-
-def test_toolbar_controls_disabled_without_a_vault(qapp) -> None:
-    engine = QQmlApplicationEngine()
-    engine.load(str(_QML_DIR / "Main.qml"))
-    assert engine.rootObjects()
-    root = engine.rootObjects()[0]
-
-    step_button = root.findChild(QObject, "statusIndicator")  # sanity: object lookup works
-    assert step_button is not None
-
-    controller = root.findChild(QObject, "appController")
-    assert controller.property("hasVault") is False
-
-
-def test_status_indicator_reflects_pipeline_progress(
-    qapp, qtbot, vault_root: Path, tmp_path: Path, monkeypatch
-) -> None:
-    """Confirms the QML Connections wiring actually reflects the adapter's
-    Python signals (not just that the adapter itself reaches the correct
-    end state, covered elsewhere). Pre-arms pause so the item genuinely
-    hasn't started when we resume -- `_ScriptedCompletions`'s artificial
-    per-call delay then gives a real, non-racy window where the status
-    reads "Processing" before it reads "Completed".
-    """
-    conn = connect(vault_root / ".llm-wiki" / "db.sqlite3")
-    _enqueue(conn, vault_root, tmp_path, "doc-a")
-    conn.close()
-
-    engine = QQmlApplicationEngine()
-    engine.load(str(_QML_DIR / "Main.qml"))
-    root = engine.rootObjects()[0]
-    controller = root.findChild(QObject, "appController")
-    controller.openVault(str(vault_root))
-
-    client = _make_client(monkeypatch, _summary_and_empty_entities())
-    adapter = controller.property("pipelineAdapter")
-    adapter.configure(str(vault_root), client, "test-model")
-
-    status_label = root.findChild(QObject, "statusIndicator")
-    assert status_label.property("text") == "Idle"
-
-    adapter.pauseRun()
-    adapter.stepOnce()
-    qtbot.wait(50)
-    assert status_label.property("text") == "Idle"  # still held, nothing started yet
-
-    adapter.resumeRun()
-    qtbot.waitUntil(lambda: status_label.property("text") == "Processing: doc-a", timeout=2000)
-    qtbot.waitUntil(lambda: not adapter.property("running"), timeout=5000)
-    assert status_label.property("text") == "Idle"

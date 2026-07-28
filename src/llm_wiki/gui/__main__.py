@@ -2,7 +2,7 @@
 
 import sys
 
-from llm_wiki.gui.app import main
+from llm_wiki.gui.app import run
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())

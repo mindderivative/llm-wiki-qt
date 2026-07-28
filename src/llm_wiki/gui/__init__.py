@@ -1,5 +1,5 @@
-"""QML desktop UI -- the only place PySide6/Qt is imported anywhere in this project."""
+"""Flet desktop UI -- the only place a UI framework is imported in this project."""
 
-from llm_wiki.gui.app import main
+from llm_wiki.gui.app import main, run
 
-__all__ = ["main"]
+__all__ = ["main", "run"]
