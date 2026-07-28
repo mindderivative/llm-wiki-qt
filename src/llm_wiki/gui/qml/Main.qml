@@ -97,6 +97,11 @@ ApplicationWindow {
     }
 
     header: ToolBar {
+        id: pipelineToolBar
+        readonly property var adapter: appController.pipelineAdapter
+        readonly property bool running: adapter ? adapter.running : false
+        readonly property bool paused: adapter ? adapter.paused : false
+
         RowLayout {
             anchors.fill: parent
             anchors.margins: 4
@@ -106,31 +111,42 @@ ApplicationWindow {
                 id: automationToggle
                 text: checked ? qsTr("Auto") : qsTr("Manual")
                 checkable: true
-                enabled: false // wired up in Phase 15c
+                enabled: appController.hasVault
             }
             ToolButton {
                 text: qsTr("Step")
-                enabled: false // wired up in Phase 15c
+                visible: !automationToggle.checked
+                enabled: appController.hasVault && !pipelineToolBar.running
+                onClicked: pipelineToolBar.adapter.stepOnce()
+            }
+            ToolButton {
+                text: qsTr("Run")
+                visible: automationToggle.checked
+                enabled: appController.hasVault && !pipelineToolBar.running
+                onClicked: pipelineToolBar.adapter.startBatch(batchSizeSpin.value)
             }
             SpinBox {
                 id: batchSizeSpin
                 from: 1
                 to: 100
                 value: 1
-                enabled: false // wired up in Phase 15c
+                enabled: appController.hasVault && automationToggle.checked
             }
             ToolSeparator {}
             ToolButton {
                 text: "⏸" // pause
-                enabled: false // wired up in Phase 15c
+                enabled: pipelineToolBar.running && !pipelineToolBar.paused
+                onClicked: pipelineToolBar.adapter.pauseRun()
             }
             ToolButton {
                 text: "▶" // resume
-                enabled: false // wired up in Phase 15c
+                enabled: pipelineToolBar.running && pipelineToolBar.paused
+                onClicked: pipelineToolBar.adapter.resumeRun()
             }
             ToolButton {
                 text: "⏹" // stop
-                enabled: false // wired up in Phase 15c
+                enabled: pipelineToolBar.running
+                onClicked: pipelineToolBar.adapter.stopRun()
             }
 
             Item { Layout.fillWidth: true }
@@ -140,6 +156,22 @@ ApplicationWindow {
                 objectName: "statusIndicator"
                 text: qsTr("Idle")
                 font.bold: true
+
+                Connections {
+                    target: appController.pipelineAdapter
+                    function onItemStarted(title) {
+                        statusIndicator.text = qsTr("Processing: %1").arg(title)
+                    }
+                    function onItemCompleted(title) {
+                        statusIndicator.text = qsTr("Completed: %1").arg(title)
+                    }
+                    function onItemErrored(title, error) {
+                        statusIndicator.text = qsTr("Error (%1): %2").arg(title).arg(error)
+                    }
+                    function onRunFinished() {
+                        statusIndicator.text = qsTr("Idle")
+                    }
+                }
             }
         }
     }

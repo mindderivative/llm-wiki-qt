@@ -14,7 +14,9 @@ from PySide6.QtQml import QmlElement
 from llm_wiki.config import AppSettings
 from llm_wiki.gui.git_controller import GitController
 from llm_wiki.gui.health_controller import HealthController
+from llm_wiki.gui.pipeline_adapter import PipelineAdapter
 from llm_wiki.gui.queue_model import QueueListModel
+from llm_wiki.llm.client import DEFAULT_API_KEY, LlamaClient
 from llm_wiki.models import LLMWikiError
 from llm_wiki.storage import connect
 from llm_wiki.vault import CONFIG_FILENAME, create_vault, get_recent_vaults, load_vault
@@ -40,6 +42,17 @@ class AppController(QObject):
         self._queue_model = QueueListModel(self)
         self._git_controller = GitController(self)
         self._health_controller = HealthController(self)
+        self._pipeline_adapter = PipelineAdapter(self)
+        # Keep the Queue and Health panels live as the pipeline runs.
+        self._pipeline_adapter.itemStarted.connect(lambda _title: self._queue_model.refresh())
+        self._pipeline_adapter.itemCompleted.connect(self._on_pipeline_item_done)
+        self._pipeline_adapter.itemErrored.connect(
+            lambda _title, _error: self._on_pipeline_item_done()
+        )
+
+    def _on_pipeline_item_done(self, *_args: object) -> None:
+        self._queue_model.refresh()
+        self._health_controller.refresh()
 
     # --- Vault lifecycle ----------------------------------------------------
 
@@ -77,6 +90,14 @@ class AppController(QObject):
         self._git_controller.set_vault_path(self._vault_path)
         self._health_controller.set_connection(self._conn)
 
+        client = LlamaClient(
+            base_url=self._settings.llm_provider.base_url,
+            api_key=self._settings.llm_provider.api_key or DEFAULT_API_KEY,
+        )
+        self._pipeline_adapter.configure(
+            self._vault_path, client, self._settings.llm_provider.chat_model
+        )
+
         self.vaultChanged.emit()
         self.settingsChanged.emit()
 
@@ -103,6 +124,10 @@ class AppController(QObject):
     @Property(QObject, constant=True)
     def healthController(self) -> HealthController:
         return self._health_controller
+
+    @Property(QObject, constant=True)
+    def pipelineAdapter(self) -> PipelineAdapter:
+        return self._pipeline_adapter
 
     # --- Settings -------------------------------------------------------
 
