@@ -26,6 +26,11 @@ ApplicationWindow {
         }
     }
 
+    LogModel {
+        id: logModel
+        objectName: "logModel"
+    }
+
     Dialog {
         id: errorDialog
         title: qsTr("Error")
@@ -153,8 +158,8 @@ ApplicationWindow {
             SplitView.preferredWidth: 260
             SplitView.minimumWidth: 160
 
-            QueuePanel {}
-            GitControlsPanel {}
+            QueuePanel { queueModel: appController.queueModel }
+            GitControlsPanel { gitController: appController.gitController }
         }
 
         // Center column: graph canvas above, bottom dock area below --
@@ -175,7 +180,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 220
 
-                PipelineLogPanel {}
+                PipelineLogPanel { logModel: logModel }
             }
         }
 
@@ -185,7 +190,7 @@ ApplicationWindow {
             SplitView.minimumWidth: 200
 
             AiChatPanel {}
-            HealthDashboardPanel {}
+            HealthDashboardPanel { healthController: appController.healthController }
         }
     }
 }

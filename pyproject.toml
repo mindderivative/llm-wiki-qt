@@ -5,6 +5,7 @@ description = "Local-first, self-maintaining knowledge base engine powered by ll
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "loguru>=0.7.3",
     "markdown-it-py>=4.2.0",
     "mcp>=1.28.1",
     "networkx>=3.6.1",
@@ -50,7 +51,9 @@ known-first-party = ["llm_wiki"]
 [tool.ruff.lint.flake8-bugbear]
 # typer's Argument()/Option() calls in defaults are the documented way to
 # declare CLI parameters -- not the mutable-default footgun B008 guards against.
-extend-immutable-calls = ["typer.Argument", "typer.Option"]
+# QModelIndex() as a rowCount()/parent() default mirrors Qt's own C++ API
+# signature (`= QModelIndex()`) and is likewise immutable/side-effect-free.
+extend-immutable-calls = ["typer.Argument", "typer.Option", "PySide6.QtCore.QModelIndex"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

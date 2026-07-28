@@ -15,8 +15,12 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
 
 # Importing these registers their @QmlElement types with the QML engine.
+# app_controller transitively registers queue_model/git_controller/
+# health_controller too (it constructs instances of each), but log_model
+# is instantiated directly in QML and needs its own explicit import.
 import llm_wiki.gui.app_controller  # noqa: F401
 import llm_wiki.gui.graph_canvas_item  # noqa: F401
+import llm_wiki.gui.log_model  # noqa: F401
 from llm_wiki.graph import get_graph_data
 from llm_wiki.storage import connect
 

@@ -5,13 +5,18 @@ Thin wiring only -- every method here delegates straight to the engine
 translating between QML-friendly types and the engine's own.
 """
 
+import sqlite3
 from pathlib import Path
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 from PySide6.QtQml import QmlElement
 
 from llm_wiki.config import AppSettings
+from llm_wiki.gui.git_controller import GitController
+from llm_wiki.gui.health_controller import HealthController
+from llm_wiki.gui.queue_model import QueueListModel
 from llm_wiki.models import LLMWikiError
+from llm_wiki.storage import connect
 from llm_wiki.vault import CONFIG_FILENAME, create_vault, get_recent_vaults, load_vault
 
 QML_IMPORT_NAME = "LLMWiki"
@@ -31,6 +36,10 @@ class AppController(QObject):
         self._vault_path = ""
         self._vault_name = ""
         self._settings = AppSettings.load(None)
+        self._conn: sqlite3.Connection | None = None
+        self._queue_model = QueueListModel(self)
+        self._git_controller = GitController(self)
+        self._health_controller = HealthController(self)
 
     # --- Vault lifecycle ----------------------------------------------------
 
@@ -62,6 +71,12 @@ class AppController(QObject):
         self._vault_path = str(path)
         self._vault_name = name
         self._settings = AppSettings.load(path / CONFIG_FILENAME)
+        self._conn = connect(path / ".llm-wiki" / "db.sqlite3")
+
+        self._queue_model.set_connection(self._conn)
+        self._git_controller.set_vault_path(self._vault_path)
+        self._health_controller.set_connection(self._conn)
+
         self.vaultChanged.emit()
         self.settingsChanged.emit()
 
@@ -76,6 +91,18 @@ class AppController(QObject):
     @Property(bool, notify=vaultChanged)
     def hasVault(self) -> bool:
         return bool(self._vault_path)
+
+    @Property(QObject, constant=True)
+    def queueModel(self) -> QueueListModel:
+        return self._queue_model
+
+    @Property(QObject, constant=True)
+    def gitController(self) -> GitController:
+        return self._git_controller
+
+    @Property(QObject, constant=True)
+    def healthController(self) -> HealthController:
+        return self._health_controller
 
     # --- Settings -------------------------------------------------------
 
