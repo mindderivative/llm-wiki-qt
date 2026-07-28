@@ -12,6 +12,7 @@ from PySide6.QtCore import Property, QObject, Signal, Slot
 from PySide6.QtQml import QmlElement
 
 from llm_wiki.config import AppSettings
+from llm_wiki.gui.chat_controller import ChatController
 from llm_wiki.gui.git_controller import GitController
 from llm_wiki.gui.health_controller import HealthController
 from llm_wiki.gui.pipeline_adapter import PipelineAdapter
@@ -43,6 +44,7 @@ class AppController(QObject):
         self._git_controller = GitController(self)
         self._health_controller = HealthController(self)
         self._pipeline_adapter = PipelineAdapter(self)
+        self._chat_controller = ChatController(self)
         # Keep the Queue and Health panels live as the pipeline runs.
         self._pipeline_adapter.itemStarted.connect(lambda _title: self._queue_model.refresh())
         self._pipeline_adapter.itemCompleted.connect(self._on_pipeline_item_done)
@@ -97,6 +99,9 @@ class AppController(QObject):
         self._pipeline_adapter.configure(
             self._vault_path, client, self._settings.llm_provider.chat_model
         )
+        self._chat_controller.configure(
+            self._vault_path, client, self._settings.llm_provider.chat_model
+        )
 
         self.vaultChanged.emit()
         self.settingsChanged.emit()
@@ -128,6 +133,10 @@ class AppController(QObject):
     @Property(QObject, constant=True)
     def pipelineAdapter(self) -> PipelineAdapter:
         return self._pipeline_adapter
+
+    @Property(QObject, constant=True)
+    def chatController(self) -> ChatController:
+        return self._chat_controller
 
     # --- Settings -------------------------------------------------------
 

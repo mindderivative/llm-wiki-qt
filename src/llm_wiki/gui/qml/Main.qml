@@ -98,7 +98,7 @@ ApplicationWindow {
 
     header: ToolBar {
         id: pipelineToolBar
-        readonly property var adapter: appController.pipelineAdapter
+        readonly property var adapter: appController ? appController.pipelineAdapter : null
         readonly property bool running: adapter ? adapter.running : false
         readonly property bool paused: adapter ? adapter.paused : false
 
@@ -111,18 +111,18 @@ ApplicationWindow {
                 id: automationToggle
                 text: checked ? qsTr("Auto") : qsTr("Manual")
                 checkable: true
-                enabled: appController.hasVault
+                enabled: appController && appController.hasVault
             }
             ToolButton {
                 text: qsTr("Step")
                 visible: !automationToggle.checked
-                enabled: appController.hasVault && !pipelineToolBar.running
+                enabled: appController && appController.hasVault && !pipelineToolBar.running
                 onClicked: pipelineToolBar.adapter.stepOnce()
             }
             ToolButton {
                 text: qsTr("Run")
                 visible: automationToggle.checked
-                enabled: appController.hasVault && !pipelineToolBar.running
+                enabled: appController && appController.hasVault && !pipelineToolBar.running
                 onClicked: pipelineToolBar.adapter.startBatch(batchSizeSpin.value)
             }
             SpinBox {
@@ -130,7 +130,7 @@ ApplicationWindow {
                 from: 1
                 to: 100
                 value: 1
-                enabled: appController.hasVault && automationToggle.checked
+                enabled: appController && appController.hasVault && automationToggle.checked
             }
             ToolSeparator {}
             ToolButton {
@@ -158,7 +158,7 @@ ApplicationWindow {
                 font.bold: true
 
                 Connections {
-                    target: appController.pipelineAdapter
+                    target: appController ? appController.pipelineAdapter : null
                     function onItemStarted(title) {
                         statusIndicator.text = qsTr("Processing: %1").arg(title)
                     }
@@ -190,8 +190,8 @@ ApplicationWindow {
             SplitView.preferredWidth: 260
             SplitView.minimumWidth: 160
 
-            QueuePanel { queueModel: appController.queueModel }
-            GitControlsPanel { gitController: appController.gitController }
+            QueuePanel { queueModel: appController ? appController.queueModel : null }
+            GitControlsPanel { gitController: appController ? appController.gitController : null }
         }
 
         // Center column: graph canvas above, bottom dock area below --
@@ -221,8 +221,10 @@ ApplicationWindow {
             SplitView.preferredWidth: 320
             SplitView.minimumWidth: 200
 
-            AiChatPanel {}
-            HealthDashboardPanel { healthController: appController.healthController }
+            AiChatPanel { chatController: appController ? appController.chatController : null }
+            HealthDashboardPanel {
+                healthController: appController ? appController.healthController : null
+            }
         }
     }
 }
