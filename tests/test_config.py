@@ -102,3 +102,33 @@ def test_loads_cleanly_from_a_real_vault_created_config(tmp_path: Path) -> None:
 
     assert settings.vault.max_link_degrees == 3
     assert settings.llm_provider.chat_model == "qwen2.5-coder-14b"
+
+
+def test_save_round_trips_through_load(tmp_path: Path) -> None:
+    config_path = tmp_path / ".llm-wiki-config"
+    settings = AppSettings.load(None)
+    settings.llm_provider.chat_model = "qwen3-8b"
+    settings.vault.max_link_degrees = 5
+
+    settings.save(config_path)
+    reloaded = AppSettings.load(config_path)
+
+    assert reloaded.llm_provider.chat_model == "qwen3-8b"
+    assert reloaded.vault.max_link_degrees == 5
+
+
+def test_save_preserves_vault_identity_fields(tmp_path: Path) -> None:
+    vault_root = tmp_path / "vault"
+    create_vault(
+        vault_root, "My Vault", "A description.", recent_vaults_path=tmp_path / "recent.json"
+    )
+    config_path = vault_root / ".llm-wiki-config"
+
+    settings = AppSettings.load(config_path)
+    settings.llm_provider.chat_model = "qwen3-8b"
+    settings.save(config_path)
+
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    assert raw["vault_name"] == "My Vault"
+    assert raw["domain_description"] == "A description."
+    assert raw["llm_provider"]["chat_model"] == "qwen3-8b"

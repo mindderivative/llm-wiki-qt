@@ -218,9 +218,26 @@ def test_ingest_with_missing_source_file_fails_cleanly_not_a_traceback(tmp_path:
 
 
 def test_no_pyside6_imported_anywhere_in_cli_module() -> None:
-    import sys
+    """Design Principle 5: the CLI stays a thin, Qt-free interface onto the engine.
 
-    assert "PySide6" not in sys.modules
-    assert not any(name.startswith("PySide6") for name in sys.modules)
+    Checks cli/main.py's own source (via AST) rather than sys.modules --
+    once Phase 15 introduces a real PySide6 GUI, other tests in the same
+    session legitimately import PySide6, so a process-wide sys.modules
+    check is no longer a valid proxy for "this module doesn't import it".
+    """
+    import ast
+    from pathlib import Path
+
+    source_path = Path(cli.__file__)
+    tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+
+    imported_names = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_names.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported_names.append(node.module)
+
+    assert not any(name.startswith("PySide6") for name in imported_names)
     # git_engine import used above should not have pulled in a Qt binding either.
     assert git_engine is not None

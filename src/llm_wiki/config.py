@@ -7,6 +7,7 @@ Precedence, highest first: explicit constructor kwargs > environment
 variables > the `.llm-wiki-config` file > the field defaults below.
 """
 
+import json
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -100,3 +101,22 @@ class AppSettings(BaseSettings):
                 )
 
         return _ScopedSettings()
+
+    def save(self, config_path: Path | str) -> None:
+        """Writes `llm_provider`/`mcp_server`/`vault` back to `.llm-wiki-config`.
+
+        Preserves any other keys already in the file -- notably the vault
+        identity fields (`vault_name`, `domain_description`, ...) that
+        `vault.manager` writes there, which this model deliberately doesn't
+        know about (see the `extra="ignore"` note above).
+        """
+        config_path = Path(config_path)
+        existing: dict = {}
+        if config_path.exists():
+            existing = json.loads(config_path.read_text(encoding="utf-8"))
+
+        existing["llm_provider"] = self.llm_provider.model_dump(mode="json")
+        existing["mcp_server"] = self.mcp_server.model_dump(mode="json")
+        existing["vault"] = self.vault.model_dump(mode="json")
+
+        config_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
