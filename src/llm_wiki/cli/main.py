@@ -92,7 +92,7 @@ def ingest(
     settings = AppSettings.load(vault / CONFIG_FILENAME)
     conn = connect(_db_path(vault))
     client = LlamaClient(
-        base_url=f"http://{settings.llm_provider.host_ip}:{settings.llm_provider.host_port}/v1",
+        base_url=settings.llm_provider.base_url,
         api_key=settings.llm_provider.api_key or DEFAULT_API_KEY,
     )
 

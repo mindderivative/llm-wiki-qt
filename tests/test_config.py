@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from llm_wiki.config import AppSettings
+from llm_wiki.vault import create_vault
 
 
 def test_load_with_no_file_returns_defaults() -> None:
@@ -61,3 +62,43 @@ def test_env_var_overrides_default_with_no_file(monkeypatch: pytest.MonkeyPatch)
     settings = AppSettings.load(None)
 
     assert settings.mcp_server.port == 9001
+
+
+def test_llm_provider_base_url_derives_from_host_ip_and_port() -> None:
+    settings = AppSettings.load(None)
+    assert settings.llm_provider.base_url == "http://127.0.0.1:11434/v1"
+
+    settings.llm_provider.host_ip = "192.168.1.50"
+    settings.llm_provider.host_port = 9999
+    # Always derived, never stale -- there's no separate stored field to drift.
+    assert settings.llm_provider.base_url == "http://192.168.1.50:9999/v1"
+
+
+def test_fresh_install_defaults_are_sane() -> None:
+    """Phase 14: what a machine with no prior `.llm-wiki-config` gets, unmodified."""
+    settings = AppSettings.load(None)
+
+    assert settings.llm_provider.base_url.startswith("http://")
+    assert settings.llm_provider.chat_model
+    assert settings.llm_provider.atomizer_model
+    assert 0 < settings.mcp_server.port < 65536
+    assert settings.mcp_server.transport in {"stdio", "sse"}
+    assert settings.vault.max_link_degrees > 0
+    assert isinstance(settings.vault.auto_watch_raw, bool)
+
+
+def test_loads_cleanly_from_a_real_vault_created_config(tmp_path: Path) -> None:
+    """Regression test: `.llm-wiki-config` is shared with vault.manager, which writes
+    identity fields (vault_name, domain_description, ...) this model doesn't know
+    about -- loading a config file from an actual `create_vault()` call must not
+    raise on those extra keys.
+    """
+    vault_root = tmp_path / "vault"
+    create_vault(
+        vault_root, "My Vault", "desc", recent_vaults_path=tmp_path / "recent.json"
+    )
+
+    settings = AppSettings.load(vault_root / ".llm-wiki-config")
+
+    assert settings.vault.max_link_degrees == 3
+    assert settings.llm_provider.chat_model == "qwen2.5-coder-14b"

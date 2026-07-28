@@ -24,10 +24,18 @@ class LLMProviderConfig(BaseModel):
     provider: str = "llama.cpp"
     host_ip: str = "127.0.0.1"
     host_port: int = 11434
-    endpoint: str = "http://127.0.0.1:11434/v1/chat/completions"
     api_key: str = ""
     chat_model: str = "qwen2.5-coder-14b"
     atomizer_model: str = "qwen2.5-coder-7b"
+
+    @property
+    def base_url(self) -> str:
+        """The OpenAI-compatible base URL, derived from `host_ip`/`host_port`.
+
+        Always in sync with those two fields -- unlike a stored `endpoint`
+        string, which the original config shape had but nothing ever read.
+        """
+        return f"http://{self.host_ip}:{self.host_port}/v1"
 
 
 class MCPServerConfig(BaseModel):

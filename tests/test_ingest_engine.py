@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from llm_wiki.ingest import enqueue_file, list_queue, update_status
+from llm_wiki.ingest import enqueue_file, get_queue_item, list_queue, update_status
 from llm_wiki.models import IngestionError, QueueStatus
 from llm_wiki.storage import connect
 
@@ -87,6 +87,19 @@ def test_status_transitions_are_persisted_and_queryable(conn, vault_root, source
 def test_update_status_unknown_id_raises_ingestion_error(conn):
     with pytest.raises(IngestionError):
         update_status(conn, 9999, QueueStatus.PARSING)
+
+
+def test_get_queue_item_returns_matching_row(conn, vault_root, source_file):
+    item = enqueue_file(conn, vault_root, source_file, title="My Notes")
+
+    fetched = get_queue_item(conn, item.id)
+
+    assert fetched == item
+
+
+def test_get_queue_item_unknown_id_raises_ingestion_error(conn):
+    with pytest.raises(IngestionError):
+        get_queue_item(conn, 9999)
 
 
 def test_list_queue_filters_by_status(conn, vault_root, source_file):

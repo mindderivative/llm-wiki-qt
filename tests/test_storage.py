@@ -4,7 +4,14 @@ import json
 import sqlite3
 from pathlib import Path
 
-from llm_wiki.storage import SCHEMA_VERSION, connect, rebuild_from_vault
+from llm_wiki.models import Chunk
+from llm_wiki.storage import (
+    SCHEMA_VERSION,
+    connect,
+    insert_chunk,
+    rebuild_from_vault,
+    upsert_note_from_file,
+)
 
 _ENTITY_NOTE = """\
 ---
@@ -127,3 +134,87 @@ def test_connect_reopening_existing_db_does_not_duplicate_schema_version(
 def test_db_path_accepts_string(tmp_path: Path) -> None:
     conn = connect(str(tmp_path / "db.sqlite3"))
     assert isinstance(conn, sqlite3.Connection)
+
+
+def test_upsert_note_from_file_inserts_then_updates(tmp_path: Path) -> None:
+    vault_root = tmp_path / "vault"
+    (vault_root / "wiki" / "entities").mkdir(parents=True)
+    note_path = vault_root / "wiki" / "entities" / "ada-lovelace.md"
+    note_path.write_text(_ENTITY_NOTE, encoding="utf-8")
+
+    conn = connect(tmp_path / "db.sqlite3")
+    upsert_note_from_file(conn, vault_root, note_path)
+
+    row = conn.execute(
+        "SELECT * FROM notes WHERE path = ?", ("wiki/entities/ada-lovelace.md",)
+    ).fetchone()
+    assert row["slug"] == "ada-lovelace"
+    first_hash = row["content_hash"]
+
+    note_path.write_text(_ENTITY_NOTE + "\nMore detail.\n", encoding="utf-8")
+    upsert_note_from_file(conn, vault_root, note_path)
+
+    rows = conn.execute("SELECT * FROM notes").fetchall()
+    assert len(rows) == 1  # updated in place, not duplicated
+    assert rows[0]["content_hash"] != first_hash
+
+
+def test_insert_chunk_persists_and_returns_id(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "db.sqlite3")
+    conn.execute(
+        "INSERT INTO queue (title, raw_path, status, created_at, updated_at) "
+        "VALUES ('Doc', 'raw/doc.md', 'queued', '2026-01-01', '2026-01-01')"
+    )
+    queue_item_id = conn.execute("SELECT id FROM queue").fetchone()[0]
+
+    chunk = Chunk(
+        queue_item_id=queue_item_id, ordinal=0, title="Intro", content="Body text.", word_count=2
+    )
+    chunk_id = insert_chunk(conn, chunk)
+
+    row = conn.execute("SELECT * FROM chunks WHERE id = ?", (chunk_id,)).fetchone()
+    assert row["title"] == "Intro"
+    assert row["content"] == "Body text."
+    assert row["queue_item_id"] == queue_item_id
+    assert row["note_id"] is None
+
+
+def test_connect_migrates_a_pre_phase10_database(tmp_path: Path) -> None:
+    """Regression test for the ALTER TABLE step added in Phase 10: a `notes`
+    table created before `links_synced_hash` existed must be migrated in
+    place, without losing the row already there.
+    """
+    db_path = tmp_path / "legacy.sqlite3"
+    raw_conn = sqlite3.connect(db_path)
+    raw_conn.execute(
+        """
+        CREATE TABLE notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL UNIQUE,
+            slug TEXT NOT NULL,
+            type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            tags TEXT NOT NULL DEFAULT '[]',
+            sources TEXT NOT NULL DEFAULT '[]',
+            content_hash TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    raw_conn.execute(
+        "INSERT INTO notes (path, slug, type, title, content_hash, updated_at) "
+        "VALUES ('wiki/a.md', 'a', 'concept', 'A', 'abc123', '2026-01-01')"
+    )
+    raw_conn.commit()
+    raw_conn.close()
+
+    conn = connect(db_path)
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(notes)").fetchall()}
+    assert "links_synced_hash" in columns
+
+    row = conn.execute(
+        "SELECT slug, links_synced_hash FROM notes WHERE path = 'wiki/a.md'"
+    ).fetchone()
+    assert row["slug"] == "a"
+    assert row["links_synced_hash"] is None

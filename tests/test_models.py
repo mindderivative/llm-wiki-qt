@@ -6,6 +6,8 @@ from pydantic import ValidationError
 from llm_wiki.models import (
     Chunk,
     CompilationError,
+    ExtractedNote,
+    GitStatus,
     IngestionError,
     LinkEdge,
     LintError,
@@ -16,6 +18,7 @@ from llm_wiki.models import (
     NoteType,
     QueueItem,
     QueueStatus,
+    VaultInfo,
     VaultNotFoundError,
 )
 
@@ -88,6 +91,36 @@ def test_lint_finding_round_trip() -> None:
         message="Link to 'babbage' has no target note.",
     )
     assert _round_trip(finding) == finding
+
+
+def test_vault_info_round_trip() -> None:
+    info = VaultInfo(path="/home/user/my-vault", name="My Vault", description="A test vault.")
+    assert _round_trip(info) == info
+    assert info.version == "1.0"
+
+
+def test_git_status_round_trip() -> None:
+    status = GitStatus(
+        branch="main", modified=["a.md"], untracked=["b.md"], clean=False
+    )
+    assert _round_trip(status) == status
+
+
+def test_git_status_defaults_to_empty_lists() -> None:
+    status = GitStatus(branch="main", clean=True)
+    assert status.modified == []
+    assert status.untracked == []
+
+
+def test_extracted_note_round_trip() -> None:
+    note = ExtractedNote(
+        frontmatter=NoteFrontmatter(
+            title="Ada Lovelace", slug="ada-lovelace", type=NoteType.ENTITY
+        ),
+        content="Ada Lovelace worked with Charles Babbage.",
+    )
+    assert _round_trip(note) == note
+    assert note.frontmatter.type is NoteType.ENTITY
 
 
 @pytest.mark.parametrize(

@@ -65,7 +65,7 @@ def create_mcp_server(vault_root: Path | str, *, client: LlamaClient | None = No
     if client is None:
         settings = AppSettings.load(vault_root / CONFIG_FILENAME)
         client = LlamaClient(
-            base_url=f"http://{settings.llm_provider.host_ip}:{settings.llm_provider.host_port}/v1",
+            base_url=settings.llm_provider.base_url,
             api_key=settings.llm_provider.api_key or DEFAULT_API_KEY,
         )
 
