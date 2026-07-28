@@ -22,6 +22,8 @@ _SYSTEM_DIR_NAME = ".system"
 
 def connect(db_path: Path | str) -> sqlite3.Connection:
     """Opens a connection with sqlite-vec loaded and the schema ensured."""
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -53,7 +55,6 @@ def rebuild_from_vault(vault_root: Path | str, db_path: Path | str) -> sqlite3.C
     db_path = Path(db_path)
     if db_path.exists():
         db_path.unlink()
-    db_path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = connect(db_path)
     _rebuild_notes(conn, vault_root)
