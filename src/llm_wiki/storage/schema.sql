@@ -33,6 +33,11 @@ CREATE TABLE IF NOT EXISTS notes (
     tags TEXT NOT NULL DEFAULT '[]',
     sources TEXT NOT NULL DEFAULT '[]',
     content_hash TEXT NOT NULL,
+    -- content_hash as of the last successful link sync; NULL means never
+    -- synced. Distinct from content_hash itself, which upsert_note_from_file()
+    -- keeps current on every write -- link_engine.sync_links() is what's
+    -- allowed to advance this one, once it's re-processed the note's edges.
+    links_synced_hash TEXT,
     updated_at TEXT NOT NULL
 );
 

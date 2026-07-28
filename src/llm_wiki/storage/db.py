@@ -15,7 +15,7 @@ import sqlite_vec
 
 from llm_wiki.models import Chunk, NoteType
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2: notes.links_synced_hash, added for Phase 10's link engine
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 _SYSTEM_DIR_NAME = ".system"
 
@@ -38,10 +38,26 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
+    _run_migrations(conn)
+
     row = conn.execute("SELECT version FROM schema_version").fetchone()
     if row is None:
         conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+    else:
+        conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
     conn.commit()
+
+
+def _run_migrations(conn: sqlite3.Connection) -> None:
+    """Explicit migration steps for DBs created before the current SCHEMA_VERSION.
+
+    `CREATE TABLE IF NOT EXISTS` in schema.sql only helps brand-new
+    databases -- it doesn't add columns to a `notes` table that already
+    exists on disk from an earlier schema version.
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(notes)").fetchall()}
+    if "links_synced_hash" not in columns:
+        conn.execute("ALTER TABLE notes ADD COLUMN links_synced_hash TEXT")
 
 
 def rebuild_from_vault(vault_root: Path | str, db_path: Path | str) -> sqlite3.Connection:
