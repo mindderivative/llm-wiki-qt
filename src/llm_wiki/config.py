@@ -48,7 +48,12 @@ class VaultConfig(BaseModel):
 class AppSettings(BaseSettings):
     """Top-level application configuration; construct via `AppSettings.load()`."""
 
-    model_config = SettingsConfigDict(env_prefix="LLM_WIKI_", env_nested_delimiter="__")
+    # extra="ignore": `.llm-wiki-config` is shared with vault.manager, which
+    # writes identity fields (vault_name, domain_description, ...) this
+    # model doesn't and shouldn't know about.
+    model_config = SettingsConfigDict(
+        env_prefix="LLM_WIKI_", env_nested_delimiter="__", extra="ignore"
+    )
 
     llm_provider: LLMProviderConfig = Field(default_factory=LLMProviderConfig)
     mcp_server: MCPServerConfig = Field(default_factory=MCPServerConfig)
@@ -65,6 +70,7 @@ class AppSettings(BaseSettings):
             model_config = SettingsConfigDict(
                 env_prefix="LLM_WIKI_",
                 env_nested_delimiter="__",
+                extra="ignore",
                 json_file=json_file,
             )
 
