@@ -111,6 +111,15 @@ class VaultInfo(BaseModel):
     created_at: datetime = Field(default_factory=_utcnow)
 
 
+class GitStatus(BaseModel):
+    """Structured result of `vcs.git_engine.status()`."""
+
+    branch: str | None
+    modified: list[str] = Field(default_factory=list)
+    untracked: list[str] = Field(default_factory=list)
+    clean: bool
+
+
 class LLMWikiError(Exception):
     """Base class for every typed exception raised by the llm_wiki engine."""
 
