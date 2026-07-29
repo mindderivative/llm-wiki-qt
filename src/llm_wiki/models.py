@@ -32,6 +32,24 @@ class QueueStatus(StrEnum):
     ERROR = "error"
 
 
+class CompileStage(StrEnum):
+    """Sub-item checkpoints `compile_queued_item()` reaches mid-compile, in
+    order -- finer-grained than `QueueStatus` (which only distinguishes the
+    three DB-persisted phases PARSING/ANALYZING/CASCADE).
+
+    Reported via `compile_queued_item()`'s `on_stage` callback, and
+    forwarded by `pipeline_runner.run_pipeline()` through the same
+    `on_progress(item, event)` callback used for "starting"/"completed"/
+    "error" -- so a consumer sees, per item: starting, atomized, extracted,
+    linked, embedded, completed (or error at any point).
+    """
+
+    ATOMIZED = "atomized"
+    EXTRACTED = "extracted"
+    LINKED = "linked"
+    EMBEDDED = "embedded"
+
+
 class NoteType(StrEnum):
     """The four wiki note categories under `wiki/`."""
 

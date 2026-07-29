@@ -28,12 +28,29 @@ from llm_wiki.gui.toolbar import Toolbar
 from llm_wiki.ingest import RawWatcher, enqueue_file, scan_raw_directory
 from llm_wiki.llm.client import DEFAULT_API_KEY, LlamaClient
 from llm_wiki.mcp.process import McpProcess
-from llm_wiki.models import LLMWikiError
+from llm_wiki.models import CompileStage, LLMWikiError
 
 LEFT_WIDTH = 280
 RIGHT_WIDTH = 320
 BOTTOM_HEIGHT = 220
 STATUS_HEIGHT = 26
+
+# Sub-item progress: "starting" (labeled "Ingesting") through each
+# CompileStage checkpoint to "completed" -- 6 equal-width steps, so the
+# progress bar moves within a single item's compile, not just per item.
+_TOTAL_STAGES = 6
+_STAGE_LABELS = {
+    CompileStage.ATOMIZED: "Atomized",
+    CompileStage.EXTRACTED: "Extracted",
+    CompileStage.LINKED: "Linked",
+    CompileStage.EMBEDDED: "Embedded",
+}
+_STAGE_INDEX = {
+    CompileStage.ATOMIZED: 2,
+    CompileStage.EXTRACTED: 3,
+    CompileStage.LINKED: 4,
+    CompileStage.EMBEDDED: 5,
+}
 
 
 def _placeholder(label: str) -> ft.Control:
@@ -294,6 +311,7 @@ class Shell:
     def _wire_pipeline_events(self) -> None:
         self.pipeline_adapter.on_run_started = self._on_run_started
         self.pipeline_adapter.on_item_started = self._on_item_started
+        self.pipeline_adapter.on_item_stage = self._on_item_stage
         self.pipeline_adapter.on_item_completed = self._on_item_completed
         self.pipeline_adapter.on_item_errored = self._on_item_errored
         self.pipeline_adapter.on_run_finished = self._on_run_finished
@@ -306,8 +324,16 @@ class Shell:
 
     def _on_item_started(self, title: str) -> None:
         self.status_file.value = title
-        self.status_stage.value = "Processing"
+        self.status_stage.value = "Ingesting"
         self.status_stage.color = theme.STAGE_INGEST
+        self._update_progress(stage_index=1)
+        self.page.update()
+
+    def _on_item_stage(self, title: str, stage: CompileStage) -> None:
+        self.status_file.value = title
+        self.status_stage.value = _STAGE_LABELS[stage]
+        self.status_stage.color = theme.STAGE_INGEST
+        self._update_progress(stage_index=_STAGE_INDEX[stage])
         self.page.update()
 
     def _on_item_completed(self, title: str) -> None:
@@ -342,8 +368,16 @@ class Shell:
         bar to 0% when there's actually new work to show progress on.
         """
 
-    def _update_progress(self) -> None:
-        fraction = self._batch_done / self._batch_total if self._batch_total else 0
+    def _update_progress(self, stage_index: int = 0) -> None:
+        """`stage_index` is how many of `_TOTAL_STAGES` the *current* item
+        has reached (0 before it starts). Combined with completed items in
+        the batch, so a single Step and a multi-item Automated batch both
+        show real sub-item motion instead of one 0%/100% jump per item.
+        """
+        if not self._batch_total:
+            fraction = 0
+        else:
+            fraction = (self._batch_done + stage_index / _TOTAL_STAGES) / self._batch_total
         self.progress_bar.value = fraction
         self.progress_label.value = f"{round(fraction * 100)}%"
 

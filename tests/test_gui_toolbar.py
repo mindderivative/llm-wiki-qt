@@ -26,7 +26,7 @@ from llm_wiki.gui.toolbar import Toolbar
 from llm_wiki.ingest import enqueue_file, get_queue_item
 from llm_wiki.llm.client import LlamaClient
 from llm_wiki.mcp.process import McpProcess
-from llm_wiki.models import QueueStatus
+from llm_wiki.models import CompileStage, QueueStatus
 from llm_wiki.storage import connect
 from llm_wiki.vault import create_vault
 
@@ -232,6 +232,63 @@ def _stub_out_llama_client(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("llm_wiki.gui.app.LlamaClient", lambda **_kwargs: fake_client)
 
 
+def test_single_item_step_moves_through_all_six_stage_checkpoints(page):
+    """A Step (batch_size=1) should sweep the progress bar through six
+    equal-width checkpoints -- not one 0%/100% jump -- since a single item
+    still has real, separately-reported sub-stages.
+    """
+    shell = Shell(page)
+    shell._on_run_started(1)
+
+    shell._on_item_started("doc")
+    assert shell.progress_bar.value == pytest.approx(1 / 6)
+    assert shell.status_stage.value == "Ingesting"
+
+    shell._on_item_stage("doc", CompileStage.ATOMIZED)
+    assert shell.progress_bar.value == pytest.approx(2 / 6)
+    assert shell.status_stage.value == "Atomized"
+
+    shell._on_item_stage("doc", CompileStage.EXTRACTED)
+    assert shell.progress_bar.value == pytest.approx(3 / 6)
+    assert shell.status_stage.value == "Extracted"
+
+    shell._on_item_stage("doc", CompileStage.LINKED)
+    assert shell.progress_bar.value == pytest.approx(4 / 6)
+    assert shell.status_stage.value == "Linked"
+
+    shell._on_item_stage("doc", CompileStage.EMBEDDED)
+    assert shell.progress_bar.value == pytest.approx(5 / 6)
+    assert shell.status_stage.value == "Embedded"
+
+    shell._on_item_completed("doc")
+    assert shell.progress_bar.value == pytest.approx(1.0)
+    assert shell.status_stage.value == "Completed"
+
+
+def test_batch_progress_combines_completed_items_and_current_item_stage(page):
+    """A 2-item Automated batch: the first item's stages move the bar within
+    its 0-50% band, completing it lands exactly on 50%, and the second
+    item's stages move within the 50-100% band.
+    """
+    shell = Shell(page)
+    shell._on_run_started(2)
+
+    shell._on_item_started("doc-a")
+    assert shell.progress_bar.value == pytest.approx(1 / 6 / 2)
+
+    shell._on_item_stage("doc-a", CompileStage.EMBEDDED)
+    assert shell.progress_bar.value == pytest.approx(5 / 6 / 2)
+
+    shell._on_item_completed("doc-a")
+    assert shell.progress_bar.value == pytest.approx(0.5)
+
+    shell._on_item_started("doc-b")
+    assert shell.progress_bar.value == pytest.approx(0.5 + 1 / 6 / 2)
+
+    shell._on_item_completed("doc-b")
+    assert shell.progress_bar.value == pytest.approx(1.0)
+
+
 def test_on_run_finished_does_not_blank_the_completed_status(page):
     """Regression: `_on_item_completed` and `_on_run_finished` fire
     back-to-back on the same event-loop thread with no yield between them
@@ -275,12 +332,18 @@ def test_shell_wires_vault_open_through_a_real_pipeline_run(
         item = enqueue_file(conn, vault_root, source, title="doc")
 
         stages_seen = []
+        real_on_item_stage = shell.pipeline_adapter.on_item_stage
         real_on_item_completed = shell.pipeline_adapter.on_item_completed
+
+        def _spy_on_item_stage(title: str, stage: CompileStage) -> None:
+            real_on_item_stage(title, stage)
+            stages_seen.append((title, shell.status_stage.value))
 
         def _spy_on_item_completed(title: str) -> None:
             real_on_item_completed(title)  # Shell's own handler: refreshes the panels
             stages_seen.append((title, shell.status_stage.value))
 
+        shell.pipeline_adapter.on_item_stage = _spy_on_item_stage
         shell.pipeline_adapter.on_item_completed = _spy_on_item_completed
 
         _on_loop(page, shell.toolbar._set_mode, False)  # Manual -> Step
@@ -288,7 +351,15 @@ def test_shell_wires_vault_open_through_a_real_pipeline_run(
 
         _wait_until(lambda: not shell.pipeline_adapter.running)
 
-        assert stages_seen == [("doc", "Completed")]
+        # Real per-stage progress through an actual compile, not just the
+        # old single starting/completed jump.
+        assert stages_seen == [
+            ("doc", "Atomized"),
+            ("doc", "Extracted"),
+            ("doc", "Linked"),
+            ("doc", "Embedded"),
+            ("doc", "Completed"),
+        ]
 
         # Settled state: on_run_finished deliberately leaves the status bar
         # showing the last item's result rather than blanking it back to

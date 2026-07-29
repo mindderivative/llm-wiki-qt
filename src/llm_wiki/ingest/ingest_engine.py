@@ -33,6 +33,7 @@ def enqueue_file(
     vault_root = Path(vault_root)
     source_file = Path(source_file)
     if not source_file.is_file():
+        logger.error(f"Source file not found: {source_file}")
         raise IngestionError(f"Source file not found: {source_file}")
 
     resolved_title = title or source_file.stem

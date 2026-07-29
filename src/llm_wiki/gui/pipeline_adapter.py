@@ -25,7 +25,7 @@ import flet as ft
 from llm_wiki.compiler import run_pipeline
 from llm_wiki.llm.client import LlamaClient
 from llm_wiki.llm.embeddings import DEFAULT_EMBEDDING_MODEL
-from llm_wiki.models import QueueItem
+from llm_wiki.models import CompileStage, QueueItem
 from llm_wiki.storage import connect
 
 
@@ -45,6 +45,7 @@ class PipelineAdapter:
         # Assigned by the owning Shell; all fire on the UI (event-loop) thread.
         self.on_run_started: Callable[[int], None] | None = None
         self.on_item_started: Callable[[str], None] | None = None
+        self.on_item_stage: Callable[[str, CompileStage], None] | None = None
         self.on_item_completed: Callable[[str], None] | None = None
         self.on_item_errored: Callable[[str, str], None] | None = None
         self.on_run_finished: Callable[[], None] | None = None
@@ -138,6 +139,8 @@ class PipelineAdapter:
             self.on_item_completed(title)
         elif event == "error" and self.on_item_errored:
             self.on_item_errored(title, error or "compilation failed")
+        elif event in CompileStage and self.on_item_stage:
+            self.on_item_stage(title, CompileStage(event))
 
     async def _dispatch_finished(self) -> None:
         self.running = False

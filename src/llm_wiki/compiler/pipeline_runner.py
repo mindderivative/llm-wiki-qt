@@ -86,6 +86,9 @@ def run_pipeline(
                 item.id,
                 chat_model=chat_model,
                 embedding_model=embedding_model,
+                on_stage=(lambda stage, item=item: on_progress(item, stage))
+                if on_progress
+                else None,
             )
         except CompilationError as exc:
             result.errors[item.id] = str(exc)

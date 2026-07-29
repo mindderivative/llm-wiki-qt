@@ -11,7 +11,7 @@ import pytest
 from llm_wiki.compiler import compile_queued_item
 from llm_wiki.ingest import enqueue_file, get_queue_item
 from llm_wiki.llm.client import LlamaClient
-from llm_wiki.models import CompilationError, QueueStatus
+from llm_wiki.models import CompilationError, CompileStage, QueueStatus
 from llm_wiki.storage import connect
 from llm_wiki.vault import create_vault
 
@@ -202,6 +202,50 @@ def test_compile_merges_into_existing_entity_note(
         "SELECT COUNT(*) FROM notes WHERE path = 'wiki/entities/ada-lovelace.md'"
     ).fetchone()
     assert row[0] == 1
+
+
+def test_compile_reports_each_stage_checkpoint_in_order(
+    monkeypatch: pytest.MonkeyPatch, conn, vault_root: Path, source_file: Path
+) -> None:
+    """Powers the GUI's sub-item progress bar (see gui/app.py's
+    _on_item_stage) -- must fire exactly these four, in this order, once
+    each, for one successful compile.
+    """
+    item = enqueue_file(conn, vault_root, source_file, title="Ada Lovelace Biography")
+    responses = [
+        "## Overview\n\nAda Lovelace pioneered the concept of programmable computing.",
+        _extraction_response(slug="ada-lovelace", content="Ada Lovelace bio."),
+    ]
+    client, _ = _make_client(monkeypatch, responses)
+
+    stages: list[CompileStage] = []
+    compile_queued_item(
+        conn, client, vault_root, item.id, chat_model="test-model", on_stage=stages.append
+    )
+
+    assert stages == [
+        CompileStage.ATOMIZED,
+        CompileStage.EXTRACTED,
+        CompileStage.LINKED,
+        CompileStage.EMBEDDED,
+    ]
+
+
+def test_compile_stops_reporting_stages_once_it_fails(
+    monkeypatch: pytest.MonkeyPatch, conn, vault_root: Path, source_file: Path
+) -> None:
+    item = enqueue_file(conn, vault_root, source_file, title="Ada Lovelace Biography")
+    client, _ = _make_client(monkeypatch, responses=[])  # first LLM call raises
+
+    stages: list[CompileStage] = []
+    with pytest.raises(CompilationError):
+        compile_queued_item(
+            conn, client, vault_root, item.id, chat_model="test-model", on_stage=stages.append
+        )
+
+    # atomize() never touches the LLM, so it reaches ATOMIZED before the
+    # summary call (the first real LLM call) raises and aborts the rest.
+    assert stages == [CompileStage.ATOMIZED]
 
 
 def test_compile_marks_item_error_and_reraises_on_failure(

@@ -13,7 +13,7 @@ import pytest
 from llm_wiki.compiler import run_pipeline, step_one
 from llm_wiki.ingest import enqueue_file, list_queue
 from llm_wiki.llm.client import LlamaClient
-from llm_wiki.models import QueueStatus
+from llm_wiki.models import CompileStage, QueueStatus
 from llm_wiki.storage import connect
 from llm_wiki.vault import create_vault
 
@@ -155,7 +155,14 @@ def test_run_pipeline_on_progress_fires_expected_events(
         on_progress=lambda queue_item, event: events.append((queue_item.id, event)),
     )
 
-    assert events == [(item.id, "starting"), (item.id, "completed")]
+    assert events == [
+        (item.id, "starting"),
+        (item.id, CompileStage.ATOMIZED),
+        (item.id, CompileStage.EXTRACTED),
+        (item.id, CompileStage.LINKED),
+        (item.id, CompileStage.EMBEDDED),
+        (item.id, "completed"),
+    ]
 
 
 def test_run_pipeline_partial_batch_failure_does_not_abort_rest(

@@ -10,6 +10,7 @@ import json
 import sqlite3
 import uuid
 
+from loguru import logger
 from pydantic import BaseModel, ValidationError
 
 from llm_wiki.models import LintFinding, LintFindingKind, NoteFrontmatter
@@ -46,8 +47,10 @@ def run_lint(conn: sqlite3.Connection) -> LintReport:
     ]
 
     _persist_findings(conn, findings)
+    score = _compute_score(findings)
+    logger.info(f"Lint pass: score {score}/100, {len(findings)} finding(s)")
 
-    return LintReport(run_id=run_id, findings=findings, score=_compute_score(findings))
+    return LintReport(run_id=run_id, findings=findings, score=score)
 
 
 def _check_schema(conn: sqlite3.Connection, run_id: str) -> list[LintFinding]:

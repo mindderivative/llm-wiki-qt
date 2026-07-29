@@ -99,11 +99,13 @@ def load_vault(vault_dir: Path | str, *, recent_vaults_path: Path | None = None)
     config_path = root / CONFIG_FILENAME
 
     if not config_path.exists():
+        logger.error(f"No {CONFIG_FILENAME} found at {root}")
         raise VaultNotFoundError(f"No {CONFIG_FILENAME} found at {root}")
 
     try:
         data = json.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
+        logger.error(f"Failed to read vault config at {root}: {exc}")
         raise VaultNotFoundError(f"Failed to read vault config at {root}: {exc}") from exc
 
     info = VaultInfo(

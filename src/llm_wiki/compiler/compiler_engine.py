@@ -8,6 +8,7 @@ than overwriting it or leaving a duplicate stub.
 """
 
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 import frontmatter
@@ -22,6 +23,7 @@ from llm_wiki.llm.extraction import extract_structured
 from llm_wiki.models import (
     Chunk,
     CompilationError,
+    CompileStage,
     ExtractedNote,
     NoteFrontmatter,
     NoteType,
@@ -84,10 +86,16 @@ def compile_queued_item(
     *,
     chat_model: str,
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+    on_stage: Callable[[CompileStage], None] | None = None,
 ) -> CompileResult:
     """Runs the full ingest pipeline for one queued item: atomize, summarize,
     extract, cascade-update, embed. On failure, marks the item ERROR and
     re-raises as `CompilationError`.
+
+    `on_stage(stage)` fires after each `CompileStage` checkpoint completes --
+    `pipeline_runner.run_pipeline()` forwards these through its own
+    `on_progress(item, event)` callback so the GUI can show sub-item
+    progress rather than a single 0%/100% jump per item.
     """
     vault_root = Path(vault_root)
     queue_item = get_queue_item(conn, queue_item_id)
@@ -99,11 +107,15 @@ def compile_queued_item(
         update_status(conn, queue_item_id, QueueStatus.PARSING)
         chunks = atomize(raw_text, queue_item_id=queue_item_id)
         logger.info(f"Atomized into {len(chunks)} chunk(s)")
+        if on_stage:
+            on_stage(CompileStage.ATOMIZED)
 
         update_status(conn, queue_item_id, QueueStatus.ANALYZING)
         summary_text = _generate_summary(client, chat_model, queue_item.title, raw_text)
         entities = _extract_entities(client, chat_model, summary_text)
         logger.info(f"Extracted {len(entities)} entity/concept note(s)")
+        if on_stage:
+            on_stage(CompileStage.EXTRACTED)
 
         update_status(conn, queue_item_id, QueueStatus.CASCADE)
         source_path, source_slug = _write_source_note(vault_root, queue_item, summary_text)
@@ -115,9 +127,13 @@ def compile_queued_item(
             upsert_note_from_file(conn, vault_root, note_path)
             entity_paths.append(note_path)
         logger.info(f"Linked {len(entity_paths)} note(s) to {source_slug}")
+        if on_stage:
+            on_stage(CompileStage.LINKED)
 
         chunk_ids = _persist_and_embed_chunks(conn, client, embedding_model, chunks)
         logger.info(f"Embedded {len(chunk_ids)} chunk(s)")
+        if on_stage:
+            on_stage(CompileStage.EMBEDDED)
 
         update_status(conn, queue_item_id, QueueStatus.COMPLETED)
         logger.info(f"Compilation completed for {queue_item.title}")

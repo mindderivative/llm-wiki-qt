@@ -13,6 +13,7 @@ from pathlib import Path
 
 import flet as ft
 import pygit2
+from loguru import logger
 
 from llm_wiki.gui import theme
 from llm_wiki.vcs import git_engine
@@ -194,6 +195,7 @@ class GitPanel(ft.Container):
         try:
             action()
         except Exception as exc:  # noqa: BLE001 -- surfaced to the user, not re-raised
+            logger.error(f"Git action failed: {exc}")
             self._on_error(str(exc))
             return
         self.refresh()
