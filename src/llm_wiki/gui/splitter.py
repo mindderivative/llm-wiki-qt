@@ -48,10 +48,12 @@ class ResizeHandle(ft.GestureDetector):
                 else ft.Divider(height=_THICKNESS, thickness=1)
             ),
             drag_interval=10,
+            # COLUMN/ROW (GTK `col-resize`/`row-resize`) rather than
+            # LEFT_RIGHT/UP_DOWN: these are the pane-divider cursors, and the
+            # arrow variants are the ones GTK logs "Unable to load  from the
+            # cursor theme" for when a theme has no matching entry.
             mouse_cursor=(
-                ft.MouseCursor.RESIZE_LEFT_RIGHT
-                if horizontal
-                else ft.MouseCursor.RESIZE_UP_DOWN
+                ft.MouseCursor.RESIZE_COLUMN if horizontal else ft.MouseCursor.RESIZE_ROW
             ),
             on_pan_update=self._on_drag,
         )

@@ -102,7 +102,7 @@ class Shell:
             on_open_vault=lambda _e: self._open_vault_dialog(),
             on_open_recent=self._open_recent,
             on_settings=lambda _e: self._open_settings_dialog(),
-            on_exit=lambda _e: self.page.window.close(),
+            on_exit=lambda _e: self._exit(),
             on_zoom_reset=lambda _e: self.graph.zoom_reset(),
             on_toggle_left=lambda _e: self._toggle(self.left_pane),
             on_toggle_right=lambda _e: self._toggle(self.right_pane),
@@ -178,6 +178,13 @@ class Shell:
     def _toggle(self, pane: ft.Container) -> None:
         pane.visible = not pane.visible
         self.page.update()
+
+    def _exit(self) -> None:
+        """`Window.close()` is a coroutine, so it has to be scheduled rather
+        than called -- calling it directly leaves File > Exit doing nothing
+        but emitting a never-awaited RuntimeWarning.
+        """
+        self.page.run_task(self.page.window.close)
 
     def _on_vault_changed(self) -> None:
         self.menu_container.content = self._build_menu()

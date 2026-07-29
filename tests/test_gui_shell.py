@@ -8,6 +8,7 @@ control trees and asserting on their structure -- no display required.
 """
 
 import ast
+import inspect
 import json
 import re
 import sqlite3
@@ -17,6 +18,7 @@ import flet as ft
 import networkx as nx
 import pytest
 
+from llm_wiki.gui import app as app_module
 from llm_wiki.gui import theme
 from llm_wiki.gui.app_controller import AppController
 from llm_wiki.gui.dialogs import build_settings_dialog, build_vault_dialog
@@ -418,6 +420,51 @@ def test_vault_dialog_surfaces_an_error_for_a_bad_path(tmp_path: Path) -> None:
     open_panel.content.controls[-1].on_click(None)
 
     assert errors and "vault" in errors[0].lower()
+
+
+# --- Async window APIs ------------------------------------------------
+
+
+def test_every_awaitable_page_api_the_shell_calls_is_scheduled() -> None:
+    """Regression: File > Exit called `page.window.close()` directly.
+
+    It is a coroutine, so calling it did nothing but emit a never-awaited
+    RuntimeWarning -- the menu item silently failed. Any coroutine method
+    reached off `self.page` has to go through `run_task`/`run_thread`, so
+    assert that no bare call to a known-async API survives in app.py.
+    """
+    async_page_apis = {
+        name
+        for name in dir(ft.Window)
+        if not name.startswith("_")
+        and inspect.iscoroutinefunction(getattr(ft.Window, name, None))
+    }
+    assert "close" in async_page_apis, "expected Window.close to still be async"
+
+    source = Path(app_module.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    offenders = []
+    for node in ast.walk(tree):
+        # A bare `...window.<async_api>()` call statement, not wrapped in
+        # run_task (which passes the method rather than calling it).
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr not in async_page_apis:
+            continue
+        if isinstance(node.func.value, ast.Attribute) and node.func.value.attr == "window":
+            offenders.append(node.func.attr)
+
+    assert offenders == [], f"awaitable Window API called directly in app.py: {offenders}"
+
+
+def test_resize_handles_use_pane_divider_cursors() -> None:
+    """The arrow cursors are what GTK failed to resolve from the theme."""
+    column = ResizeHandle(ft.Container(width=200), horizontal=True)
+    row = ResizeHandle(ft.Container(height=200), horizontal=False)
+
+    assert column.mouse_cursor is ft.MouseCursor.RESIZE_COLUMN
+    assert row.mouse_cursor is ft.MouseCursor.RESIZE_ROW
 
 
 # --- Health panel (flet-charts) ---------------------------------------
