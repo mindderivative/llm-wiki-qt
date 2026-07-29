@@ -1,18 +1,22 @@
-"""Phase 15b: Queue, Pipeline Log, Git Controls, and Health Dashboard panels."""
+"""Phase 16b: Items, Git Controls, and Pipeline Log panels.
+
+Flet controls are plain dataclasses (see test_gui_shell.py's module
+docstring for why), so these are exercised the same way: build a real
+panel and assert on its state and control tree, no display required.
+"""
 
 from pathlib import Path
 
 import pytest
 from loguru import logger
 
-# Importing these registers their @QmlElement types with the QML engine.
-import llm_wiki.gui.app_controller  # noqa: F401
-from llm_wiki.gui.git_controller import GitController
-from llm_wiki.gui.health_controller import HealthController
-from llm_wiki.gui.log_model import LogModel
-from llm_wiki.gui.queue_model import QueueListModel
-from llm_wiki.ingest import enqueue_file
-from llm_wiki.storage import connect, upsert_note_from_file
+from llm_wiki.gui.git_panel import GitPanel
+from llm_wiki.gui.items_panel import ItemsPanel
+from llm_wiki.gui.log_bridge import LogLine, subscribe
+from llm_wiki.gui.log_panel import LogPanel
+from llm_wiki.ingest import enqueue_file, update_status
+from llm_wiki.models import QueueStatus
+from llm_wiki.storage import connect
 from llm_wiki.vault import create_vault
 
 
@@ -30,122 +34,126 @@ def vault_root(tmp_path: Path) -> Path:
     return root
 
 
-# --- QueueListModel -----------------------------------------------------
+# --- ItemsPanel ---------------------------------------------------------
 
 
-def test_queue_model_empty_with_no_connection(qapp) -> None:
-    model = QueueListModel()
-    assert model.rowCount() == 0
+def test_items_panel_empty_with_no_connection() -> None:
+    panel = ItemsPanel()
+    assert panel.raw_items == []
+    assert panel.queue_items == []
 
 
-def test_queue_model_reflects_enqueued_items(qapp, vault_root: Path) -> None:
+def test_items_panel_splits_completed_from_in_progress(vault_root: Path) -> None:
     conn = connect(vault_root / ".llm-wiki" / "db.sqlite3")
     src = vault_root.parent / "doc.txt"
     src.write_text("hello", encoding="utf-8")
-    enqueue_file(conn, vault_root, src, title="Doc One")
+    item = enqueue_file(conn, vault_root, src, title="Doc One")
 
-    model = QueueListModel()
-    model.set_connection(conn)
+    panel = ItemsPanel()
+    panel.set_connection(conn)
+    assert len(panel.queue_items) == 1
+    assert panel.raw_items == []
+    assert "QUEUE · 1" in panel._queue_header.value
 
-    assert model.rowCount() == 1
-    index = model.index(0, 0)
-    assert model.data(index, QueueListModel.TitleRole) == "Doc One"
-    assert model.data(index, QueueListModel.StatusRole) == "queued"
-    assert model.data(index, QueueListModel.ErrorRole) == ""
+    update_status(conn, item.id, QueueStatus.COMPLETED)
+    panel.refresh()
+
+    assert len(panel.raw_items) == 1
+    assert panel.queue_items == []
+    assert "RAW ITEMS · 1" in panel._raw_header.value
 
 
-def test_queue_model_refresh_picks_up_new_items(qapp, vault_root: Path) -> None:
+def test_items_panel_refresh_picks_up_new_items(vault_root: Path) -> None:
     conn = connect(vault_root / ".llm-wiki" / "db.sqlite3")
-    model = QueueListModel()
-    model.set_connection(conn)
-    assert model.rowCount() == 0
+    panel = ItemsPanel()
+    panel.set_connection(conn)
+    assert panel.queue_items == []
 
     src = vault_root.parent / "doc.txt"
     src.write_text("hello", encoding="utf-8")
     enqueue_file(conn, vault_root, src, title="Doc One")
-    model.refresh()
+    panel.refresh()
 
-    assert model.rowCount() == 1
-
-
-# --- LogModel -------------------------------------------------------------
+    assert len(panel.queue_items) == 1
 
 
-def test_log_model_receives_loguru_records(qapp) -> None:
-    model = LogModel()
-    logger.info("hello from test_log_model_receives_loguru_records")
-
-    lines = [model.data(model.index(i, 0)) for i in range(model.rowCount())]
-    assert any("hello from test_log_model_receives_loguru_records" in line for line in lines)
+# --- LogPanel / log_bridge ----------------------------------------------
 
 
-def test_log_model_clear(qapp) -> None:
-    model = LogModel()
-    logger.info("a message for test_log_model_clear")
-    assert model.rowCount() > 0
+def test_log_panel_receives_loguru_records() -> None:
+    panel = LogPanel()
+    logger.info("hello from test_log_panel_receives_loguru_records")
 
-    model.clear()
+    assert any(
+        "hello from test_log_panel_receives_loguru_records" in line.message
+        for line in panel.lines
+    )
 
-    assert model.rowCount() == 0
+
+def test_log_panel_clear() -> None:
+    panel = LogPanel()
+    logger.info("a message for test_log_panel_clear")
+    assert panel.lines
+
+    panel.clear()
+
+    assert panel.lines == []
+    assert panel._body.controls == []
 
 
-def test_multiple_log_models_dont_duplicate_sink_registration(qapp) -> None:
-    """Each LogModel instance must not register its own loguru handler --
+def test_multiple_log_panels_dont_duplicate_sink_registration() -> None:
+    """Each LogPanel instance must not register its own loguru handler --
     otherwise a message would be duplicated per instance created across a
     test session.
     """
-    first = LogModel()
-    second = LogModel()
+    first = LogPanel()
+    second = LogPanel()
     logger.info("shared sink message for duplication test")
 
-    first_lines = [first.data(first.index(i, 0)) for i in range(first.rowCount())]
-    second_lines = [second.data(second.index(i, 0)) for i in range(second.rowCount())]
-
-    assert sum("shared sink message for duplication test" in line for line in first_lines) == 1
-    assert sum("shared sink message for duplication test" in line for line in second_lines) == 1
+    assert sum("shared sink message for duplication test" in ln.message for ln in first.lines) == 1
+    assert sum("shared sink message for duplication test" in ln.message for ln in second.lines) == 1
 
 
-# --- GitController ----------------------------------------------------
+def test_log_bridge_reports_the_records_level() -> None:
+    received: list[LogLine] = []
+    subscribe(received.append)
+
+    logger.warning("a warning for test_log_bridge_reports_the_records_level")
+
+    assert received[-1].level == "WARNING"
 
 
-def test_git_controller_reports_uninitialized_before_init(qapp, vault_root: Path) -> None:
-    controller = GitController()
-    controller.set_vault_path(str(vault_root))
-
-    assert controller.isInitialized is False
-    assert controller.changedFiles.rowCount() == 0
+# --- GitPanel -------------------------------------------------------------
 
 
-def test_git_controller_init_stage_commit_flow(qapp, vault_root: Path) -> None:
-    controller = GitController()
-    controller.set_vault_path(str(vault_root))
+def test_git_panel_reports_uninitialized_before_init(vault_root: Path) -> None:
+    panel = GitPanel(on_error=lambda _msg: None)
+    panel.set_vault_path(vault_root)
 
-    controller.initRepo()
-    assert controller.isInitialized is True
-    assert controller.clean is False
-    assert controller.changedFiles.rowCount() > 0
-
-    controller.stageAll()
-    controller.commit("Initial commit")
-
-    assert controller.clean is True
-    assert controller.changedFiles.rowCount() == 0
+    assert panel.is_initialized is False
+    assert panel._files.controls == []
+    assert panel._init_button.visible is True
 
 
-def test_git_controller_changed_files_model_roles(qapp, vault_root: Path) -> None:
-    controller = GitController()
-    controller.set_vault_path(str(vault_root))
-    controller.initRepo()
+def test_git_panel_init_stage_commit_flow(vault_root: Path) -> None:
+    panel = GitPanel(on_error=lambda _msg: None)
+    panel.set_vault_path(vault_root)
 
-    model = controller.changedFiles
-    kinds = {model.data(model.index(i, 0), model.KindRole) for i in range(model.rowCount())}
-    assert kinds <= {"modified", "untracked"}
-    assert "untracked" in kinds  # a fresh vault's files are all untracked
+    panel.init_repo()
+    assert panel.is_initialized is True
+    assert panel.clean is False
+    assert panel._files.controls
+    assert panel._init_button.visible is False
+
+    panel.stage_all()
+    panel._message.value = "Initial commit"
+    panel.commit()
+
+    assert panel.clean is True
+    assert panel._files.controls == []
 
 
-def test_git_controller_handles_many_changed_files_without_hanging(
-    qapp, vault_root: Path
-) -> None:
+def test_git_panel_handles_many_changed_files_without_hanging(vault_root: Path) -> None:
     """Regression test for the original GitManager's QProcess stdout-draining
     bug class: a large status/diff output must not hang the UI layer.
     pygit2 (in-process, no subprocess) avoids the root cause entirely, but
@@ -155,50 +163,33 @@ def test_git_controller_handles_many_changed_files_without_hanging(
     for i in range(200):
         (concepts / f"note-{i}.md").write_text(f"note {i}", encoding="utf-8")
 
-    controller = GitController()
-    controller.set_vault_path(str(vault_root))
-    controller.initRepo()  # calls refresh() internally; must return promptly
+    panel = GitPanel(on_error=lambda _msg: None)
+    panel.set_vault_path(vault_root)
+    panel.init_repo()  # calls refresh() internally; must return promptly
 
-    assert controller.changedFiles.rowCount() >= 200
+    assert len(panel._files.controls) >= 200
 
 
-def test_git_controller_error_on_commit_without_a_repo_is_surfaced_not_raised(
-    qapp, vault_root: Path
-) -> None:
-    controller = GitController()
-    controller.set_vault_path(str(vault_root))
-    # Deliberately skip initRepo() -- committing with no .git yet must
-    # surface as errorOccurred, not raise pygit2.GitError into the GUI.
-
+def test_git_panel_commit_without_a_message_is_surfaced_not_raised(vault_root: Path) -> None:
     errors = []
-    controller.errorOccurred.connect(errors.append)
+    panel = GitPanel(on_error=errors.append)
+    panel.set_vault_path(vault_root)
+    panel.init_repo()
+    panel.stage_all()
 
-    controller.commit("no repo yet")
+    panel.commit()  # no message set
 
     assert errors
 
 
-# --- HealthController -----------------------------------------------------
+def test_git_panel_commit_without_a_repo_is_surfaced_not_raised(vault_root: Path) -> None:
+    errors = []
+    panel = GitPanel(on_error=errors.append)
+    panel.set_vault_path(vault_root)
+    # Deliberately skip init_repo() -- committing with no .git yet must
+    # surface via on_error, not raise pygit2.GitError into the GUI.
+    panel._message.value = "no repo yet"
 
+    panel.commit()
 
-def test_health_controller_defaults_to_100_with_no_connection(qapp) -> None:
-    controller = HealthController()
-    assert controller.score == 100
-    assert controller.schemaViolations == 0
-
-
-def test_health_controller_reflects_lint_findings(qapp, vault_root: Path) -> None:
-    concepts = vault_root / "wiki" / "concepts"
-    (concepts / "isolated.md").write_text(
-        "---\ntitle: Isolated\nslug: isolated\ntype: concept\ntags: []\nsources: []\n"
-        "---\n\nNo links in or out.\n",
-        encoding="utf-8",
-    )
-    conn = connect(vault_root / ".llm-wiki" / "db.sqlite3")
-    upsert_note_from_file(conn, vault_root, concepts / "isolated.md")
-
-    controller = HealthController()
-    controller.set_connection(conn)
-
-    assert controller.score < 100
-    assert controller.isolatedNotes == 1
+    assert errors

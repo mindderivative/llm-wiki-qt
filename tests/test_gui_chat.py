@@ -7,9 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 
-# Importing these registers their @QmlElement types with the QML engine.
-import llm_wiki.gui.app_controller  # noqa: E402, F401
-import llm_wiki.gui.log_model  # noqa: E402, F401
 from llm_wiki.gui.chat_controller import ChatController, ChatMessageModel
 from llm_wiki.llm.client import LlamaClient
 from llm_wiki.vault import create_vault

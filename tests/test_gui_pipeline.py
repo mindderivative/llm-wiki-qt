@@ -13,9 +13,6 @@ from types import SimpleNamespace
 import openai
 import pytest
 
-# Importing these registers their @QmlElement types with the QML engine.
-import llm_wiki.gui.app_controller  # noqa: E402, F401
-import llm_wiki.gui.log_model  # noqa: E402, F401
 from llm_wiki.gui.pipeline_adapter import PipelineAdapter
 from llm_wiki.ingest import enqueue_file, get_queue_item
 from llm_wiki.llm.client import LlamaClient

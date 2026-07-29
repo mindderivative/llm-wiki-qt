@@ -15,8 +15,11 @@ from llm_wiki.gui import theme
 from llm_wiki.gui.app_controller import AppController
 from llm_wiki.gui.dialogs import build_settings_dialog, build_vault_dialog
 from llm_wiki.gui.dock import DockArea
+from llm_wiki.gui.git_panel import GitPanel
 from llm_wiki.gui.graph_canvas import GraphCanvas
 from llm_wiki.gui.health_panel import HealthPanel
+from llm_wiki.gui.items_panel import ItemsPanel
+from llm_wiki.gui.log_panel import LogPanel
 from llm_wiki.gui.menu import build_menu_bar
 from llm_wiki.gui.splitter import ResizeHandle
 
@@ -44,15 +47,16 @@ class Shell:
         self.controller.subscribe(self._on_vault_changed)
 
         self.graph = GraphCanvas()
-        self.left_dock = DockArea(
-            [("Items", _placeholder("Queue & raw items")), ("Git", _placeholder("Git controls"))]
-        )
+        self.items_panel = ItemsPanel()
+        self.git_panel = GitPanel(on_error=self._show_error)
+        self.left_dock = DockArea([("Items", self.items_panel), ("Git", self.git_panel)])
         self.health_panel = HealthPanel()
         self.right_dock = DockArea(
             [("Health", self.health_panel), ("AI Chat", _placeholder("AI chat"))],
             selected=1,
         )
-        self.bottom_dock = DockArea([("Pipeline Log", _placeholder("Pipeline log"))])
+        self.log_panel = LogPanel()
+        self.bottom_dock = DockArea([("Pipeline Log", self.log_panel)])
 
         self.left_pane = ft.Container(
             width=LEFT_WIDTH,
@@ -191,6 +195,8 @@ class Shell:
         if self.controller.conn is not None:
             self.graph.set_graph(get_graph_data(self.controller.conn))
             self.health_panel.set_connection(self.controller.conn)
+            self.items_panel.set_connection(self.controller.conn)
+        self.git_panel.set_vault_path(self.controller.vault_path)
         self.page.title = (
             f"LLM-Wiki -- {self.controller.vault_name}"
             if self.controller.has_vault
