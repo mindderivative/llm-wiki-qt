@@ -459,7 +459,7 @@ def test_every_awaitable_page_api_the_shell_calls_is_scheduled() -> None:
 
 
 def test_resize_handles_use_pane_divider_cursors() -> None:
-    """The arrow cursors are what GTK failed to resolve from the theme."""
+    """`col-resize`/`row-resize` are the conventional splitter cursors."""
     column = ResizeHandle(ft.Container(width=200), horizontal=True)
     row = ResizeHandle(ft.Container(height=200), horizontal=False)
 
