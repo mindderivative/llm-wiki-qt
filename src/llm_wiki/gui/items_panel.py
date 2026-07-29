@@ -26,14 +26,6 @@ _STAGE_COLORS = {
 }
 
 
-def _column_header(label: str) -> ft.Control:
-    return ft.Container(
-        padding=ft.Padding(10, 8, 10, 8),
-        bgcolor=theme.PANEL_HEADER_BG,
-        content=ft.Text(label, size=10.5, color=theme.TEXT_MUTED, letter_spacing=0.5),
-    )
-
-
 def _raw_row(item: QueueItem) -> ft.Control:
     return ft.Container(
         padding=ft.Padding(10, 7, 10, 7),

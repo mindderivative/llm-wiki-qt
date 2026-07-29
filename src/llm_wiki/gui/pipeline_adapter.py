@@ -1,11 +1,15 @@
-"""`QThread` adapter for `compiler.pipeline_runner.run_pipeline()` (Phase 15c).
+"""Background-thread adapter for `compiler.pipeline_runner.run_pipeline()`
+(Phase 16c) -- the Flet counterpart to Phase 15c's `QThread` adapter, and
+the only place in the GUI layer Flet's threading model is a concern.
 
-The only place in this project Qt threading concepts exist, per
-ARCHITECTURE.md §9: a thin wrapper subscribing to the engine's
-plain-Python progress callbacks and re-emitting them as Qt signals.
-`pause`/`stop` are a `threading.Event` the UI thread sets from the
-toolbar's controls; the worker thread polls them exactly as
-`run_pipeline()`'s `should_pause`/`should_stop` callables expect.
+`page.run_thread()` runs the batch on a worker thread from the page's
+executor. Flet controls are *not* thread-safe to touch directly from
+there -- `Page.update()` ultimately does a bare `asyncio.Queue.put_nowait()`
+on the connection's send queue, which assumes the event-loop thread.
+`page.run_task()` is: it schedules a coroutine via
+`asyncio.run_coroutine_threadsafe()`, so progress callbacks hop back onto
+the event loop through it before touching any control -- the Flet
+equivalent of a QThread's implicitly-queued cross-thread signal emission.
 
 Each run opens its own SQLite connection on the worker thread rather than
 reusing one created on the GUI thread -- `sqlite3.Connection` objects
@@ -13,10 +17,10 @@ aren't safe to share across threads.
 """
 
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import Property, QObject, QThread, Signal, Slot
-from PySide6.QtQml import QmlElement
+import flet as ft
 
 from llm_wiki.compiler import run_pipeline
 from llm_wiki.llm.client import LlamaClient
@@ -24,90 +28,31 @@ from llm_wiki.llm.embeddings import DEFAULT_EMBEDDING_MODEL
 from llm_wiki.models import QueueItem
 from llm_wiki.storage import connect
 
-QML_IMPORT_NAME = "LLMWiki"
-QML_IMPORT_MAJOR_VERSION = 1
 
+class PipelineAdapter:
+    """Runs batch/step pipeline execution on a worker thread."""
 
-class _PipelineWorker(QThread):
-    """Runs `run_pipeline()` on a worker thread; emits progress as Qt signals."""
-
-    itemStarted = Signal(str)
-    itemCompleted = Signal(str)
-    itemErrored = Signal(str, str)
-
-    def __init__(
-        self,
-        vault_root: Path,
-        client: LlamaClient,
-        *,
-        batch_size: int,
-        chat_model: str,
-        embedding_model: str,
-        pause_event: threading.Event,
-        stop_event: threading.Event,
-        parent: QObject | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self._vault_root = vault_root
-        self._client = client
-        self._batch_size = batch_size
-        self._chat_model = chat_model
-        self._embedding_model = embedding_model
-        self._pause_event = pause_event
-        self._stop_event = stop_event
-
-    def run(self) -> None:
-        conn = connect(self._vault_root / ".llm-wiki" / "db.sqlite3")
-        try:
-
-            def on_progress(item: QueueItem, event: str) -> None:
-                if event == "starting":
-                    self.itemStarted.emit(item.title)
-                elif event == "completed":
-                    self.itemCompleted.emit(item.title)
-                elif event == "error":
-                    self.itemErrored.emit(item.title, item.error or "compilation failed")
-
-            run_pipeline(
-                conn,
-                self._client,
-                self._vault_root,
-                batch_size=self._batch_size,
-                chat_model=self._chat_model,
-                embedding_model=self._embedding_model,
-                on_progress=on_progress,
-                should_pause=self._pause_event.is_set,
-                should_stop=self._stop_event.is_set,
-            )
-        finally:
-            conn.close()
-
-
-@QmlElement
-class PipelineAdapter(QObject):
-    """QML-facing controller for batch/step pipeline execution."""
-
-    runningChanged = Signal()
-    pausedChanged = Signal()
-    itemStarted = Signal(str)
-    itemCompleted = Signal(str)
-    itemErrored = Signal(str, str)
-    runFinished = Signal()
-
-    def __init__(self, parent: QObject | None = None) -> None:
-        super().__init__(parent)
+    def __init__(self, page: ft.Page) -> None:
+        self.page = page
         self._vault_root: Path | None = None
         self._client: LlamaClient | None = None
         self._chat_model = ""
         self._embedding_model = DEFAULT_EMBEDDING_MODEL
-        self._worker: _PipelineWorker | None = None
         self._pause_event = threading.Event()
         self._stop_event = threading.Event()
-        self._running = False
+        self.running = False
+
+        # Assigned by the owning Shell; all fire on the UI (event-loop) thread.
+        self.on_run_started: Callable[[int], None] | None = None
+        self.on_item_started: Callable[[str], None] | None = None
+        self.on_item_completed: Callable[[str], None] | None = None
+        self.on_item_errored: Callable[[str, str], None] | None = None
+        self.on_run_finished: Callable[[], None] | None = None
+        self.on_state_changed: Callable[[], None] | None = None
 
     def configure(
         self,
-        vault_root: str,
+        vault_root: str | Path,
         client: LlamaClient,
         chat_model: str,
         embedding_model: str = DEFAULT_EMBEDDING_MODEL,
@@ -118,67 +63,88 @@ class PipelineAdapter(QObject):
         self._chat_model = chat_model
         self._embedding_model = embedding_model
 
+    @property
+    def paused(self) -> bool:
+        return self._pause_event.is_set()
+
+    # --- Controls -------------------------------------------------------
+
+    def start_batch(self, batch_size: int) -> None:
+        self._start(batch_size)
+
+    def step_once(self) -> None:
+        self._start(1)
+
+    def pause_run(self) -> None:
+        self._pause_event.set()
+        self._notify_state_changed()
+
+    def resume_run(self) -> None:
+        self._pause_event.clear()
+        self._notify_state_changed()
+
+    def stop_run(self) -> None:
+        self._stop_event.set()
+        self._pause_event.clear()  # don't leave a stopped run parked in "paused"
+
     def _start(self, batch_size: int) -> None:
-        if self._running or self._vault_root is None or self._client is None:
+        if self.running or self._vault_root is None or self._client is None:
             return
 
         # Note: _pause_event is deliberately NOT cleared here. By the time
         # any run reaches "finished", pause is already false -- either it
-        # was resumed to completion, or stopRun() (which also clears pause)
-        # ended it. Not clearing it also means pauseRun() can be called
-        # before startBatch()/stepOnce() to pre-arm a paused run.
+        # was resumed to completion, or stop_run() (which also clears
+        # pause) ended it. Not clearing it also means pause_run() can be
+        # called before start_batch()/step_once() to pre-arm a paused run.
         self._stop_event.clear()
-        self._worker = _PipelineWorker(
-            self._vault_root,
-            self._client,
-            batch_size=batch_size,
-            chat_model=self._chat_model,
-            embedding_model=self._embedding_model,
-            pause_event=self._pause_event,
-            stop_event=self._stop_event,
-            parent=self,
-        )
-        self._worker.itemStarted.connect(self.itemStarted)
-        self._worker.itemCompleted.connect(self.itemCompleted)
-        self._worker.itemErrored.connect(self.itemErrored)
-        self._worker.finished.connect(self._on_worker_finished)
+        self.running = True
+        self._notify_state_changed()
+        if self.on_run_started:
+            self.on_run_started(batch_size)
+        self.page.run_thread(self._worker, batch_size)
 
-        self._running = True
-        self.runningChanged.emit()
-        self._worker.start()
+    # --- Worker thread ------------------------------------------------------
 
-    @Slot(int)
-    def startBatch(self, batch_size: int) -> None:
-        self._start(batch_size)
+    def _worker(self, batch_size: int) -> None:
+        assert self._vault_root is not None
+        assert self._client is not None
+        conn = connect(self._vault_root / ".llm-wiki" / "db.sqlite3")
+        try:
 
-    @Slot()
-    def stepOnce(self) -> None:
-        self._start(1)
+            def on_progress(item: QueueItem, event: str) -> None:
+                self.page.run_task(self._dispatch_progress, item.title, item.error, event)
 
-    @Slot()
-    def pauseRun(self) -> None:
-        self._pause_event.set()
-        self.pausedChanged.emit()
+            run_pipeline(
+                conn,
+                self._client,
+                self._vault_root,
+                batch_size=batch_size,
+                chat_model=self._chat_model,
+                embedding_model=self._embedding_model,
+                on_progress=on_progress,
+                should_pause=self._pause_event.is_set,
+                should_stop=self._stop_event.is_set,
+            )
+        finally:
+            conn.close()
+        self.page.run_task(self._dispatch_finished)
 
-    @Slot()
-    def resumeRun(self) -> None:
-        self._pause_event.clear()
-        self.pausedChanged.emit()
+    # --- Back on the UI thread, via page.run_task() --------------------------
 
-    @Slot()
-    def stopRun(self) -> None:
-        self._stop_event.set()
-        self._pause_event.clear()  # don't leave a stopped run parked in "paused"
+    async def _dispatch_progress(self, title: str, error: str | None, event: str) -> None:
+        if event == "starting" and self.on_item_started:
+            self.on_item_started(title)
+        elif event == "completed" and self.on_item_completed:
+            self.on_item_completed(title)
+        elif event == "error" and self.on_item_errored:
+            self.on_item_errored(title, error or "compilation failed")
 
-    def _on_worker_finished(self) -> None:
-        self._running = False
-        self.runningChanged.emit()
-        self.runFinished.emit()
+    async def _dispatch_finished(self) -> None:
+        self.running = False
+        self._notify_state_changed()
+        if self.on_run_finished:
+            self.on_run_finished()
 
-    @Property(bool, notify=runningChanged)
-    def running(self) -> bool:
-        return self._running
-
-    @Property(bool, notify=pausedChanged)
-    def paused(self) -> bool:
-        return self._pause_event.is_set()
+    def _notify_state_changed(self) -> None:
+        if self.on_state_changed:
+            self.on_state_changed()

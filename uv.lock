@@ -639,7 +639,7 @@ requires-dist = [
     { name = "flet-charts", specifier = ">=0.86.4" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "markdown-it-py", specifier = ">=4.2.0" },
-    { name = "mcp", specifier = ">=1.28.1" },
+    { name = "mcp", specifier = ">=1.28.1,<2.0.0" },
     { name = "networkx", specifier = ">=3.6.1" },
     { name = "numpy", specifier = ">=2.5.1" },
     { name = "openai", specifier = ">=2.49.0" },

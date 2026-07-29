@@ -9,7 +9,12 @@ dependencies = [
     "flet[cli,desktop]>=0.86.4",
     "loguru>=0.7.3",
     "markdown-it-py>=4.2.0",
-    "mcp>=1.28.1",
+    # <2.0.0: mcp 2.0 removed mcp.server.fastmcp (mcp/server.py's FastMCP
+    # import). `uv sync` respects uv.lock regardless, but `flet build` runs
+    # its own independent pip resolve against this open range -- it picked
+    # 2.0.0 and broke the built bundle at import time (compileall doesn't
+    # execute imports, so it never caught it at build time).
+    "mcp>=1.28.1,<2.0.0",
     "networkx>=3.6.1",
     "numpy>=2.5.1",
     "openai>=2.49.0",

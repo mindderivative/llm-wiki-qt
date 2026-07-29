@@ -6,9 +6,11 @@ packages; this module and its siblings under `llm_wiki.gui` are the only
 place Flet appears at all.
 """
 
+import contextlib
 import sys
 
 import flet as ft
+from loguru import logger
 
 from llm_wiki.graph import get_graph_data
 from llm_wiki.gui import theme
@@ -21,7 +23,11 @@ from llm_wiki.gui.health_panel import HealthPanel
 from llm_wiki.gui.items_panel import ItemsPanel
 from llm_wiki.gui.log_panel import LogPanel
 from llm_wiki.gui.menu import build_menu_bar
+from llm_wiki.gui.pipeline_adapter import PipelineAdapter
 from llm_wiki.gui.splitter import ResizeHandle
+from llm_wiki.gui.toolbar import Toolbar
+from llm_wiki.llm.client import DEFAULT_API_KEY, LlamaClient
+from llm_wiki.mcp.process import McpProcess
 
 LEFT_WIDTH = 280
 RIGHT_WIDTH = 320
@@ -74,8 +80,22 @@ class Shell:
             border=ft.Border.only(top=ft.BorderSide(1, theme.BORDER)),
         )
 
+        self.pipeline_adapter = PipelineAdapter(page)
+        self.mcp_process = McpProcess()
+        self.toolbar = Toolbar(self.controller, self.pipeline_adapter, self.mcp_process)
+        self.toolbar.on_sync = self._sync_status_bar
+        self._batch_total = 0
+        self._batch_done = 0
+        self._wire_pipeline_events()
+
         self.status_file = ft.Text("—", size=11, color=theme.TEXT_STAT)
         self.status_stage = ft.Text("Idle", size=11, color=theme.TEXT_SECONDARY)
+        self.progress_bar = ft.ProgressBar(
+            value=0, width=120, height=5, border_radius=3, bgcolor=theme.INPUT_BG
+        )
+        self.progress_label = ft.Text("0%", size=11, color=theme.TEXT_SUBTLE)
+        self.mcp_status_text = ft.Text("MCP: Stopped", size=11, color=theme.TEXT_SUBTLE)
+        self.active_set_text = ft.Text("", size=11, color=theme.TEXT_SUBTLE)
         self.menu_container = ft.Container(content=self._build_menu())
 
         page.add(
@@ -84,7 +104,7 @@ class Shell:
                 expand=True,
                 controls=[
                     self.menu_container,
-                    self._build_toolbar(),
+                    self.toolbar,
                     self._build_body(),
                     self._build_status_bar(),
                 ],
@@ -111,19 +131,6 @@ class Shell:
             on_toggle_left=lambda _e: self._toggle(self.left_pane),
             on_toggle_right=lambda _e: self._toggle(self.right_pane),
             on_toggle_bottom=lambda _e: self._toggle(self.bottom_pane),
-        )
-
-    def _build_toolbar(self) -> ft.Control:
-        """Chrome only -- the automation and MCP controls are wired in 16c."""
-        return ft.Container(
-            height=46,
-            bgcolor=theme.CHROME_BG,
-            border=ft.Border.only(bottom=ft.BorderSide(1, theme.BORDER)),
-            padding=ft.Padding(12, 0, 12, 0),
-            content=ft.Row(
-                spacing=10,
-                controls=[ft.Text("Pipeline controls", size=12, color=theme.TEXT_MUTED)],
-            ),
         )
 
     def _build_body(self) -> ft.Control:
@@ -173,6 +180,11 @@ class Shell:
                             self.status_stage,
                         ],
                     ),
+                    self.progress_bar,
+                    self.progress_label,
+                    ft.Container(expand=True),
+                    self.mcp_status_text,
+                    self.active_set_text,
                 ],
             ),
         )
@@ -188,6 +200,7 @@ class Shell:
         than called -- calling it directly leaves File > Exit doing nothing
         but emitting a never-awaited RuntimeWarning.
         """
+        self.mcp_process.stop()  # don't leave an orphaned subprocess behind
         self.page.run_task(self.page.window.close)
 
     def _on_vault_changed(self) -> None:
@@ -197,12 +210,78 @@ class Shell:
             self.health_panel.set_connection(self.controller.conn)
             self.items_panel.set_connection(self.controller.conn)
         self.git_panel.set_vault_path(self.controller.vault_path)
+
+        llm = self.controller.settings.llm_provider
+        client = LlamaClient(base_url=llm.base_url, api_key=llm.api_key or DEFAULT_API_KEY)
+        self.pipeline_adapter.configure(self.controller.vault_path, client, llm.chat_model)
+
         self.page.title = (
             f"LLM-Wiki -- {self.controller.vault_name}"
             if self.controller.has_vault
             else "LLM-Wiki"
         )
+        self.toolbar.sync()
         self.page.update()
+
+    # --- Pipeline adapter events (all fire on the UI thread) ----------------
+
+    def _wire_pipeline_events(self) -> None:
+        self.pipeline_adapter.on_run_started = self._on_run_started
+        self.pipeline_adapter.on_item_started = self._on_item_started
+        self.pipeline_adapter.on_item_completed = self._on_item_completed
+        self.pipeline_adapter.on_item_errored = self._on_item_errored
+        self.pipeline_adapter.on_run_finished = self._on_run_finished
+        self.pipeline_adapter.on_state_changed = self.toolbar.sync
+
+    def _on_run_started(self, batch_size: int) -> None:
+        self._batch_total = batch_size
+        self._batch_done = 0
+        self._update_progress()
+
+    def _on_item_started(self, title: str) -> None:
+        self.status_file.value = title
+        self.status_stage.value = "Processing"
+        self.status_stage.color = theme.STAGE_INGEST
+        self.page.update()
+
+    def _on_item_completed(self, title: str) -> None:
+        self._batch_done += 1
+        self.status_stage.value = "Completed"
+        self.status_stage.color = theme.STAGE_LINK
+        self._update_progress()
+        self.items_panel.refresh()
+        self.health_panel.refresh()
+        self.page.update()
+
+    def _on_item_errored(self, title: str, error: str) -> None:
+        self._batch_done += 1
+        self.status_file.value = title
+        self.status_stage.value = "Error"
+        self.status_stage.color = theme.ERROR
+        self._update_progress()
+        self.items_panel.refresh()
+        self.page.update()
+        logger.error(f"{title}: {error}")
+
+    def _on_run_finished(self) -> None:
+        self.status_file.value = "—"
+        self.status_stage.value = "Idle"
+        self.status_stage.color = theme.TEXT_SECONDARY
+        self.progress_bar.value = 0
+        self.progress_label.value = "0%"
+        self.page.update()
+
+    def _update_progress(self) -> None:
+        fraction = self._batch_done / self._batch_total if self._batch_total else 0
+        self.progress_bar.value = fraction
+        self.progress_label.value = f"{round(fraction * 100)}%"
+
+    def _sync_status_bar(self) -> None:
+        self.mcp_status_text.value = f"MCP: {'Running' if self.mcp_process.running else 'Stopped'}"
+        self.active_set_text.value = f"Active set: {self.toolbar.batch_size} notes"
+        with contextlib.suppress(RuntimeError):
+            self.mcp_status_text.update()
+            self.active_set_text.update()
 
     def _open_recent(self, path: str) -> None:
         try:

@@ -52,13 +52,21 @@ def _read_note(vault_root: Path, subdir: str, slug: str) -> dict[str, Any]:
     }
 
 
-def create_mcp_server(vault_root: Path | str, *, client: LlamaClient | None = None) -> FastMCP:
+def create_mcp_server(
+    vault_root: Path | str,
+    *,
+    client: LlamaClient | None = None,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+) -> FastMCP:
     """Builds a FastMCP app with tools bound to one vault.
 
     Exposes exactly the four capabilities the plan calls for: semantic
     search (Phase 8), entity lookup, path traversal (Phase 10), and
     synthesis reads. `client` can be injected (as `LlamaClient`/`compile_queued_item`
-    already allow) so tests never need a real llama-server.
+    already allow) so tests never need a real llama-server. `host`/`port`
+    only matter for the `sse`/`streamable-http` transports -- `stdio`
+    ignores them.
     """
     vault_root = Path(vault_root).resolve()
     conn = connect(vault_root / ".llm-wiki" / "db.sqlite3")
@@ -69,7 +77,7 @@ def create_mcp_server(vault_root: Path | str, *, client: LlamaClient | None = No
             api_key=settings.llm_provider.api_key or DEFAULT_API_KEY,
         )
 
-    mcp = FastMCP("LLM-Wiki")
+    mcp = FastMCP("LLM-Wiki", host=host, port=port)
 
     @mcp.tool()
     def search_wiki_content(query: str, top_k: int = 5) -> list[dict[str, Any]]:
@@ -151,9 +159,11 @@ def main() -> None:
     parser.add_argument(
         "--transport", default="stdio", choices=["stdio", "sse", "streamable-http"]
     )
+    parser.add_argument("--host", default="127.0.0.1", help="sse/streamable-http bind address.")
+    parser.add_argument("--port", default=8000, type=int, help="sse/streamable-http bind port.")
     args = parser.parse_args()
 
-    mcp = create_mcp_server(args.vault)
+    mcp = create_mcp_server(args.vault, host=args.host, port=args.port)
     mcp.run(transport=args.transport)
 
 
