@@ -14,6 +14,7 @@ import flet as ft
 from llm_wiki.graph import get_graph_data
 from llm_wiki.gui import theme
 from llm_wiki.gui.app_controller import AppController
+from llm_wiki.gui.chat_panel import ChatPanel
 from llm_wiki.gui.dialogs import (
     build_new_vault_dialog,
     build_open_vault_dialog,
@@ -57,15 +58,6 @@ _STAGE_INDEX = {
 }
 
 
-def _placeholder(label: str) -> ft.Control:
-    """Stands in for a panel that a later sub-phase fills in."""
-    return ft.Container(
-        expand=True,
-        alignment=ft.Alignment.CENTER,
-        content=ft.Text(label, size=12, color=theme.TEXT_MUTED),
-    )
-
-
 class Shell:
     """Builds the window layout and keeps it in sync with the active vault."""
 
@@ -87,8 +79,9 @@ class Shell:
         self.git_panel = GitPanel(on_error=self._show_error)
         self.left_dock = DockArea([("Items", self.items_panel), ("Git", self.git_panel)])
         self.health_panel = HealthPanel()
+        self.chat_panel = ChatPanel(page)
         self.right_dock = DockArea(
-            [("Health", self.health_panel), ("AI Chat", _placeholder("AI chat"))],
+            [("Health", self.health_panel), ("AI Chat", self.chat_panel)],
             selected=1,
         )
         self.log_panel = LogPanel()
@@ -245,6 +238,7 @@ class Shell:
         llm = self.controller.settings.llm_provider
         client = LlamaClient(base_url=llm.base_url, api_key=llm.api_key or DEFAULT_API_KEY)
         self.pipeline_adapter.configure(self.controller.vault_path, client, llm.chat_model)
+        self.chat_panel.configure(self.controller.vault_path, client, llm.chat_model)
         self._sync_raw_watcher()
 
         self.page.title = (

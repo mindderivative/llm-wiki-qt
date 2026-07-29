@@ -51,13 +51,6 @@ dev = [
     "ruff>=0.8",
     "pytest>=8.0",
     "pre-commit>=4.0",
-    # PySide6 is no longer a runtime dependency -- the Flet shell replaced the
-    # QML one in Phase 16a. The Phase 15b/c/d controllers under gui/ still
-    # import it until they are ported, so it stays here to keep them and their
-    # tests working, and out of `project.dependencies` so `flet build` does not
-    # bundle ~200 MB of Qt into the app. Drop both once 16d lands.
-    "pyside6>=6.11.1",
-    "pytest-qt>=4.5.0",
 ]
 
 [tool.ruff]
@@ -75,9 +68,7 @@ known-first-party = ["llm_wiki"]
 [tool.ruff.lint.flake8-bugbear]
 # typer's Argument()/Option() calls in defaults are the documented way to
 # declare CLI parameters -- not the mutable-default footgun B008 guards against.
-# QModelIndex() as a rowCount()/parent() default mirrors Qt's own C++ API
-# signature (`= QModelIndex()`) and is likewise immutable/side-effect-free.
-extend-immutable-calls = ["typer.Argument", "typer.Option", "PySide6.QtCore.QModelIndex"]
+extend-immutable-calls = ["typer.Argument", "typer.Option"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

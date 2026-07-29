@@ -1,13 +1,22 @@
-"""Phase 15d: the AI Chat panel -- ChatController/ChatMessageModel and the
-QThread worker wrapping llm.chat.ask().
+"""Phase 16d: the AI Chat panel -- `ChatPanel`'s worker thread wrapping
+`llm.chat.ask()`.
+
+Uses the same real-thread-crossing `_FakePage` double as
+`test_gui_pipeline.py`/`test_gui_toolbar.py`: `page.run_thread()` spawns a
+real background thread, `page.run_task()` schedules onto a dedicated event
+loop thread via `run_coroutine_threadsafe`, exercising the same mechanics
+`ChatPanel` actually uses rather than stubbing them out.
 """
 
+import asyncio
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from llm_wiki.gui.chat_controller import ChatController, ChatMessageModel
+from llm_wiki.gui.chat_panel import ChatPanel
 from llm_wiki.llm.client import LlamaClient
 from llm_wiki.vault import create_vault
 
@@ -24,6 +33,39 @@ def vault_root(tmp_path: Path) -> Path:
     root = tmp_path / "vault"
     create_vault(root, "Test Vault", "desc")
     return root
+
+
+class _FakePage:
+    def __init__(self) -> None:
+        self.loop = asyncio.new_event_loop()
+        self._loop_thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self._loop_thread.start()
+
+    def run_thread(self, handler, *args, **kwargs) -> None:
+        threading.Thread(target=handler, args=args, kwargs=kwargs, daemon=True).start()
+
+    def run_task(self, handler, *args, **kwargs):
+        return asyncio.run_coroutine_threadsafe(handler(*args, **kwargs), self.loop)
+
+    def close(self) -> None:
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self._loop_thread.join(timeout=2)
+
+
+@pytest.fixture
+def page():
+    fake = _FakePage()
+    yield fake
+    fake.close()
+
+
+def _wait_until(predicate, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("condition not met within timeout")
 
 
 class _FakeEmbeddings:
@@ -44,89 +86,72 @@ class _FakeCompletions:
 
 
 def _make_client(answer: str = "Here's what I found.") -> LlamaClient:
-    fake = SimpleNamespace(embeddings=_FakeEmbeddings(), chat=SimpleNamespace(
-        completions=_FakeCompletions(answer)
-    ))
+    fake = SimpleNamespace(
+        embeddings=_FakeEmbeddings(), chat=SimpleNamespace(completions=_FakeCompletions(answer))
+    )
     return LlamaClient(client=fake)
 
 
-# --- ChatMessageModel -------------------------------------------------
+def test_send_message_appends_user_then_assistant_reply(page, vault_root: Path) -> None:
+    panel = ChatPanel(page)
+    panel.configure(vault_root, _make_client("Ada Lovelace wrote it."), "test-model")
+
+    panel.send_message("Who wrote the first algorithm?")
+
+    assert panel.messages == [("user", "Who wrote the first algorithm?")]  # synchronous
+    assert panel.busy is True
+
+    _wait_until(lambda: not panel.busy)
+
+    assert panel.messages == [
+        ("user", "Who wrote the first algorithm?"),
+        ("assistant", "Ada Lovelace wrote it."),
+    ]
+    assert len(panel._message_list.controls) == 2
 
 
-def test_message_model_starts_empty(qapp) -> None:
-    model = ChatMessageModel()
-    assert model.rowCount() == 0
+def test_send_message_ignores_empty_text(page, vault_root: Path) -> None:
+    panel = ChatPanel(page)
+    panel.configure(vault_root, _make_client(), "test-model")
+
+    panel.send_message("   ")
+
+    assert panel.messages == []
+    assert panel.busy is False
 
 
-def test_message_model_append_and_roles(qapp) -> None:
-    model = ChatMessageModel()
-    model.append_message("user", "Hello?")
-    model.append_message("assistant", "Hi there.")
+def test_send_message_ignored_while_busy(page, vault_root: Path) -> None:
+    panel = ChatPanel(page)
+    panel.configure(vault_root, _make_client(), "test-model")
 
-    assert model.rowCount() == 2
-    assert model.data(model.index(0, 0), ChatMessageModel.RoleRole) == "user"
-    assert model.data(model.index(0, 0), ChatMessageModel.ContentRole) == "Hello?"
-    assert model.data(model.index(1, 0), ChatMessageModel.RoleRole) == "assistant"
+    panel.send_message("First question")
+    assert panel.busy is True
 
-
-# --- ChatController -----------------------------------------------------
-
-
-def test_send_message_appends_user_then_assistant_reply(qapp, qtbot, vault_root: Path) -> None:
-    controller = ChatController()
-    controller.configure(str(vault_root), _make_client("Ada Lovelace wrote it."), "test-model")
-
-    controller.sendMessage("Who wrote the first algorithm?")
-
-    assert controller.messages.rowCount() == 1  # user message appended synchronously
-    assert controller.busy is True
-
-    qtbot.waitUntil(lambda: not controller.busy, timeout=5000)
-
-    assert controller.messages.rowCount() == 2
-    second_message = controller.messages.index(1, 0)
-    assert (
-        controller.messages.data(second_message, ChatMessageModel.ContentRole)
-        == "Ada Lovelace wrote it."
-    )
-
-
-def test_send_message_ignores_empty_text(qapp, vault_root: Path) -> None:
-    controller = ChatController()
-    controller.configure(str(vault_root), _make_client(), "test-model")
-
-    controller.sendMessage("   ")
-
-    assert controller.messages.rowCount() == 0
-    assert controller.busy is False
-
-
-def test_send_message_ignored_while_busy(qapp, qtbot, vault_root: Path) -> None:
-    controller = ChatController()
-    controller.configure(str(vault_root), _make_client(), "test-model")
-
-    controller.sendMessage("First question")
-    assert controller.busy is True
-
-    controller.sendMessage("Second question, sent too soon")
-    qtbot.waitUntil(lambda: not controller.busy, timeout=5000)
+    panel.send_message("Second question, sent too soon")
+    _wait_until(lambda: not panel.busy)
 
     # Only the first question's user+assistant pair -- the second call was a no-op.
-    assert controller.messages.rowCount() == 2
+    assert len(panel.messages) == 2
+    assert panel.messages[0] == ("user", "First question")
 
 
-def test_send_message_without_configure_is_a_no_op(qapp) -> None:
-    controller = ChatController()
+def test_send_message_without_configure_is_a_no_op(page) -> None:
+    panel = ChatPanel(page)
 
-    controller.sendMessage("Anyone there?")
+    panel.send_message("Anyone there?")
 
-    assert controller.messages.rowCount() == 0
-    assert controller.busy is False
+    assert panel.messages == []
+    assert panel.busy is False
 
 
-def test_chat_worker_failure_surfaces_error_and_resets_busy(
-    qapp, qtbot, vault_root: Path
+def test_chat_worker_failure_surfaces_an_inline_error_and_resets_busy(
+    page, vault_root: Path
 ) -> None:
+    """Failures show as a chat bubble rather than a modal dialog -- a popup
+    per failed query would be far more intrusive here than in the
+    single-shot dialogs (`_show_error`) elsewhere in the shell.
+    """
+
     class _FailingCompletions:
         def create(self, **kwargs):
             raise RuntimeError("llama-server unreachable")
@@ -134,15 +159,35 @@ def test_chat_worker_failure_surfaces_error_and_resets_busy(
     fake = SimpleNamespace(
         embeddings=_FakeEmbeddings(), chat=SimpleNamespace(completions=_FailingCompletions())
     )
-    controller = ChatController()
-    controller.configure(str(vault_root), LlamaClient(client=fake), "test-model")
+    panel = ChatPanel(page)
+    panel.configure(vault_root, LlamaClient(client=fake), "test-model")
 
-    errors = []
-    controller.errorOccurred.connect(errors.append)
+    panel.send_message("Will this fail?")
+    _wait_until(lambda: not panel.busy)
 
-    controller.sendMessage("Will this fail?")
-    qtbot.waitUntil(lambda: not controller.busy, timeout=5000)
+    assert panel.messages[0] == ("user", "Will this fail?")
+    assert panel.messages[1][0] == "assistant"
+    assert "llama-server unreachable" in panel.messages[1][1]
 
-    assert errors and "llama-server unreachable" in errors[0]
-    # The user's message is still recorded; no assistant reply was appended.
-    assert controller.messages.rowCount() == 1
+
+def test_input_field_is_cleared_after_sending(page, vault_root: Path) -> None:
+    panel = ChatPanel(page)
+    panel.configure(vault_root, _make_client(), "test-model")
+    panel._input.value = "What's in this vault?"
+
+    panel._on_submit(None)
+
+    assert panel._input.value == ""
+    _wait_until(lambda: not panel.busy)
+
+
+def test_typing_indicator_visible_only_while_busy(page, vault_root: Path) -> None:
+    panel = ChatPanel(page)
+    panel.configure(vault_root, _make_client(), "test-model")
+    assert panel._typing_indicator.visible is False
+
+    panel.send_message("Ping")
+    assert panel._typing_indicator.visible is True
+
+    _wait_until(lambda: not panel.busy)
+    assert panel._typing_indicator.visible is False
