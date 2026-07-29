@@ -5,6 +5,11 @@ lint, storage) passes between each other and persists to/from the SQLite
 cache — see ARCHITECTURE.md §6 for the table layout each model mirrors.
 """
 
+# Self-referencing annotations below (`-> Chunk` inside the class body) work
+# implicitly on 3.14 via PEP 649. Declared explicitly so the package also
+# imports on 3.13, which `flet build` bundles -- see pyproject's requires-python.
+from __future__ import annotations
+
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path

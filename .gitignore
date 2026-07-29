@@ -43,3 +43,6 @@ raw/.sources/
 
 # Legacy PySide6 build (kept locally for reference only, not part of the new engine)
 .archive/
+
+# flet build artifacts
+/build/

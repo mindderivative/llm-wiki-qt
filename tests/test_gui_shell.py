@@ -22,9 +22,11 @@ from llm_wiki.gui.app_controller import AppController
 from llm_wiki.gui.dialogs import build_settings_dialog, build_vault_dialog
 from llm_wiki.gui.dock import DockArea
 from llm_wiki.gui.graph_canvas import GraphCanvas
+from llm_wiki.gui.health_panel import HealthPanel
 from llm_wiki.gui.menu import build_menu_bar
 from llm_wiki.gui.splitter import ResizeHandle
-from llm_wiki.models import LLMWikiError
+from llm_wiki.models import LintFindingKind, LLMWikiError
+from llm_wiki.storage import connect
 from llm_wiki.vault import create_vault
 
 
@@ -416,6 +418,60 @@ def test_vault_dialog_surfaces_an_error_for_a_bad_path(tmp_path: Path) -> None:
     open_panel.content.controls[-1].on_click(None)
 
     assert errors and "vault" in errors[0].lower()
+
+
+# --- Health panel (flet-charts) ---------------------------------------
+
+
+def test_health_panel_defaults_to_100_with_no_connection() -> None:
+    panel = HealthPanel()
+
+    assert panel.score == 100
+    assert set(panel.counts.values()) == {0}
+
+
+def test_health_panel_chart_has_a_bar_per_finding_kind() -> None:
+    chart = HealthPanel().build_chart()
+
+    assert [label.label.value for label in chart.bottom_axis.labels] == [
+        "Schema",
+        "Links",
+        "Isolated",
+    ]
+    assert [group.rods[0].to_y for group in chart.groups] == [0, 0, 0]
+
+
+def test_health_panel_chart_max_y_never_collapses_to_zero() -> None:
+    """An empty vault still needs a drawable axis."""
+    assert HealthPanel().build_chart().max_y == 1
+
+
+def test_health_panel_reflects_a_real_lint_run(vault_root: Path) -> None:
+    panel = HealthPanel()
+    conn = connect(vault_root / ".llm-wiki" / "db.sqlite3")
+
+    panel.set_connection(conn)
+
+    assert panel.score == 100
+    assert sum(panel.counts.values()) == 0
+
+
+def test_health_panel_counts_broken_links_and_drops_the_score(vault_root: Path) -> None:
+    conn = connect(vault_root / ".llm-wiki" / "db.sqlite3")
+    conn.execute(
+        "INSERT INTO notes (path, title, slug, type, tags, sources, content_hash, updated_at) "
+        "VALUES ('wiki/a.md', 'A', 'a', 'concept', '[]', '[]', 'hash', '2026-01-01T00:00:00Z')"
+    )
+    conn.execute("INSERT INTO links (source_slug, target_slug) VALUES ('a', 'nope')")
+    conn.commit()
+
+    panel = HealthPanel()
+    panel.set_connection(conn)
+
+    assert panel.counts[LintFindingKind.BROKEN_LINK] == 1
+    assert panel.score < 100
+    # The chart scales to the real finding count.
+    assert panel.build_chart().max_y >= 1
 
 
 # --- Architectural guard ----------------------------------------------

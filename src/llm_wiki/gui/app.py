@@ -16,6 +16,7 @@ from llm_wiki.gui.app_controller import AppController
 from llm_wiki.gui.dialogs import build_settings_dialog, build_vault_dialog
 from llm_wiki.gui.dock import DockArea
 from llm_wiki.gui.graph_canvas import GraphCanvas
+from llm_wiki.gui.health_panel import HealthPanel
 from llm_wiki.gui.menu import build_menu_bar
 from llm_wiki.gui.splitter import ResizeHandle
 
@@ -46,8 +47,9 @@ class Shell:
         self.left_dock = DockArea(
             [("Items", _placeholder("Queue & raw items")), ("Git", _placeholder("Git controls"))]
         )
+        self.health_panel = HealthPanel()
         self.right_dock = DockArea(
-            [("Health", _placeholder("Vault health")), ("AI Chat", _placeholder("AI chat"))],
+            [("Health", self.health_panel), ("AI Chat", _placeholder("AI chat"))],
             selected=1,
         )
         self.bottom_dock = DockArea([("Pipeline Log", _placeholder("Pipeline log"))])
@@ -181,6 +183,7 @@ class Shell:
         self.menu_container.content = self._build_menu()
         if self.controller.conn is not None:
             self.graph.set_graph(get_graph_data(self.controller.conn))
+            self.health_panel.set_connection(self.controller.conn)
         self.page.title = (
             f"LLM-Wiki -- {self.controller.vault_name}"
             if self.controller.has_vault

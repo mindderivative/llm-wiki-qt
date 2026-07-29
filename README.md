@@ -11,8 +11,11 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and
 
 ## Requirements
 
-- Python 3.14+
+- Python 3.13+
 - [`uv`](https://docs.astral.sh/uv/)
+- The [Flutter SDK](https://docs.flutter.dev/get-started/install/linux) —
+  only to **package** the desktop app (`flet build`); the CLI, the MCP
+  server, and running the app from source all work without it
 - A local `llama-server` instance (or compatible OpenAI-API endpoint) for
   ingestion and search — everything else (vault management, linking,
   linting, git) works with zero LLM connectivity.
@@ -95,6 +98,37 @@ Tools: `search_wiki_content` (semantic search), `read_entity_profile`,
 `read_synthesis_note`, `trace_network_path` (degree-of-separation lookup).
 Every file-touching tool is sandboxed to the vault root.
 
+## Desktop app
+
+Run it from source — fast, and all you need day to day:
+
+```bash
+uv run python -m llm_wiki.gui
+```
+
+Package it as a standalone Linux bundle (`build/linux/llm-wiki`, ~256 MB,
+no Python or `uv` needed to run):
+
+```bash
+uv run flet build linux --python-version 3.13 --skip-flutter-doctor
+```
+
+Three flags' worth of explanation, because none of them are optional:
+
+- **The Flutter SDK must be on `PATH`.** Flet extensions with Dart code
+  (here `flet-charts`, which draws the Health panel's chart) are compiled
+  into a custom client; the prebuilt `flet-desktop` client cannot load
+  them. Install the SDK anywhere — no root required — and add its `bin/`
+  to `PATH`.
+- **`--python-version 3.13` is required.** `outlines` (grammar-constrained
+  extraction, `llm/extraction.py`) publishes no Python 3.14 wheel, and
+  `flet build` otherwise picks the highest version satisfying
+  `requires-python`. Flet offers no `pyproject.toml` key for this, so it
+  has to be passed on the command line.
+- **`--skip-flutter-doctor` avoids a false failure.** `flutter doctor`
+  exits non-zero over a missing Android SDK and Chrome, neither of which a
+  Linux desktop build uses, and `flet build` treats that as fatal.
+
 ## Development
 
 ```bash
@@ -102,3 +136,9 @@ uv run pytest              # full suite (live-LLM tests deselected by default)
 uv run pytest -m live_llm  # tests that hit a real llama-server instance
 uv run ruff check .
 ```
+
+PySide6 is a dev-only dependency: the Phase 15 QML controllers under
+`gui/` still import it until they are ported to Flet. It is deliberately
+kept out of `project.dependencies` so `flet build` does not bundle Qt —
+which also breaks the build, since `compileall` fails on its
+`site-packages`.

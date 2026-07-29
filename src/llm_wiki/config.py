@@ -7,6 +7,10 @@ Precedence, highest first: explicit constructor kwargs > environment
 variables > the `.llm-wiki-config` file > the field defaults below.
 """
 
+# `load()` returns `AppSettings` from inside the class body -- implicit on
+# 3.14 via PEP 649, declared here so the package also imports on 3.13.
+from __future__ import annotations
+
 import json
 from pathlib import Path
 
