@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import flet as ft
 import pytest
 
 from llm_wiki.gui.chat_panel import ChatPanel
@@ -191,3 +192,60 @@ def test_typing_indicator_visible_only_while_busy(page, vault_root: Path) -> Non
 
     _wait_until(lambda: not panel.busy)
     assert panel._typing_indicator.visible is False
+
+
+def test_message_list_is_a_list_view_that_auto_scrolls(page) -> None:
+    """The right dock's chat panel must never leave a new reply scrolled out
+    of view -- ListView's `auto_scroll` guarantees that natively.
+    """
+    panel = ChatPanel(page)
+
+    assert isinstance(panel._message_list, ft.ListView)
+    assert panel._message_list.auto_scroll is True
+
+
+def test_bubble_width_tracks_panel_resize(page, vault_root: Path) -> None:
+    """Bubbles must not stay pinned to a fixed pixel width when the user
+    drags the right dock's splitter wider or narrower (splitter.py's
+    ResizeHandle) -- they should track the panel's actual rendered width.
+    """
+    panel = ChatPanel(page)
+    panel.configure(vault_root, _make_client(), "test-model")
+    panel.send_message("Before resize")
+    _wait_until(lambda: not panel.busy)
+    width_before = panel._message_list.controls[0].controls[0].width
+
+    panel._on_resized(
+        ft.LayoutSizeChangeEvent(name="size_change", control=panel, width=500, height=400)
+    )
+
+    width_after = panel._bubble_width()
+    assert width_after != width_before
+    # Both existing bubbles were rebuilt at the new width...
+    for row in panel._message_list.controls:
+        assert row.controls[0].width == width_after
+        assert row.controls[0].content.width == width_after
+    # ...and a message sent after the resize also uses it.
+    panel.send_message("After resize")
+    _wait_until(lambda: not panel.busy)
+    assert panel._message_list.controls[-2].controls[0].width == width_after
+
+
+def test_bubble_width_never_shrinks_below_the_readability_floor(page) -> None:
+    panel = ChatPanel(page)
+
+    panel._on_resized(
+        ft.LayoutSizeChangeEvent(name="size_change", control=panel, width=100, height=400)
+    )
+
+    assert panel._bubble_width() == 160.0
+
+
+def test_bubble_width_falls_back_before_any_layout_pass(page) -> None:
+    """`on_size_change` hasn't fired yet (e.g. headless tests, or the first
+    frame before layout) -- `_panel_width` stays at its 0 default, and
+    bubbles fall back to a fixed width rather than collapsing to 0.
+    """
+    panel = ChatPanel(page)
+
+    assert panel._bubble_width() == 240.0

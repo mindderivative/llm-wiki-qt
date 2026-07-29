@@ -21,25 +21,31 @@ from llm_wiki.llm.client import LlamaClient
 from llm_wiki.llm.embeddings import DEFAULT_EMBEDDING_MODEL
 from llm_wiki.storage import connect
 
-# The right dock is a fixed ~320px wide; capping bubble width keeps long
-# answers wrapping inside the panel instead of rendering as one long
-# unwrapped line (nothing else here constrains a Text's width).
-_BUBBLE_MAX_WIDTH = 240
+# The right dock is user-resizable (splitter.py's ResizeHandle) and bubbles
+# need to track its actual width rather than a fixed pixel value -- see
+# ChatPanel._on_resized(). These bound the computed width: never narrower
+# than this floor, never wider than this fraction of the available area
+# (short messages still shrink to fit within that cap).
+_BUBBLE_MIN_WIDTH = 160.0
+_BUBBLE_MAX_FRACTION = 0.78
+# Used before the panel's first layout pass (on_size_change hasn't fired
+# yet) and in headless tests, where no real layout ever happens.
+_BUBBLE_FALLBACK_WIDTH = 240.0
 
 
-def _bubble(role: str, content: str) -> ft.Control:
+def _bubble(role: str, content: str, width: float) -> ft.Control:
     is_user = role == "user"
     return ft.Row(
         alignment=ft.MainAxisAlignment.END if is_user else ft.MainAxisAlignment.START,
         controls=[
             ft.Container(
-                width=_BUBBLE_MAX_WIDTH,
+                width=width,
                 padding=ft.Padding(8, 8, 12, 8),
                 bgcolor=theme.ACCENT_DEEP if is_user else theme.BUBBLE_BG,
                 border_radius=10,
                 content=ft.Text(
                     content,
-                    width=_BUBBLE_MAX_WIDTH,
+                    width=width,
                     size=12.5,
                     color=theme.TEXT_BRIGHT if is_user else theme.TEXT_BUBBLE,
                     selectable=True,
@@ -62,8 +68,12 @@ class ChatPanel(ft.Container):
         self._embedding_model = DEFAULT_EMBEDDING_MODEL
         self.messages: list[tuple[str, str]] = []
         self.busy = False
+        self._panel_width = 0.0
+        self.on_size_change = self._on_resized
 
-        self._message_list = ft.Column(spacing=10, scroll=ft.ScrollMode.AUTO, expand=True)
+        # ListView (not Column): its `auto_scroll` keeps the latest message
+        # in view without any manual scroll_to bookkeeping here.
+        self._message_list = ft.ListView(spacing=10, expand=True, auto_scroll=True)
         self._typing_indicator = ft.Text(
             "assistant is typing…", size=11.5, italic=True, color=theme.TEXT_MUTED, visible=False
         )
@@ -180,9 +190,25 @@ class ChatPanel(ft.Container):
 
     # --- Rendering ------------------------------------------------------
 
+    def _bubble_width(self) -> float:
+        # 24 == the message area's own left+right padding (see `content=`
+        # in __init__) -- the actual space a bubble has to work with.
+        available = self._panel_width - 24
+        if available <= 0:
+            return _BUBBLE_FALLBACK_WIDTH
+        return max(_BUBBLE_MIN_WIDTH, min(available * _BUBBLE_MAX_FRACTION, available))
+
+    def _on_resized(self, e: ft.LayoutSizeChangeEvent) -> None:
+        self._panel_width = e.width
+        width = self._bubble_width()
+        self._message_list.controls = [
+            _bubble(role, content, width) for role, content in self.messages
+        ]
+        self._update_if_attached()
+
     def _append(self, role: str, content: str) -> None:
         self.messages.append((role, content))
-        self._message_list.controls.append(_bubble(role, content))
+        self._message_list.controls.append(_bubble(role, content, self._bubble_width()))
         self._update_if_attached()
 
     def _update_if_attached(self) -> None:
