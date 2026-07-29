@@ -48,7 +48,7 @@ class _FakePage:
         self._loop_thread = threading.Thread(target=self.loop.run_forever, daemon=True)
         self._loop_thread.start()
         self.title = ""
-        self.overlay: list[object] = []
+        self.services: list[object] = []
 
     def add(self, *_controls) -> None:
         pass
@@ -99,6 +99,17 @@ def _wait_until(predicate, timeout: float = 5.0) -> None:
 @dataclass
 class _FakePickedFile:
     path: str
+
+
+def test_file_picker_is_registered_as_a_service_not_an_overlay_control(page):
+    """Regression: `FilePicker` is a `Service`, not a visual `Control` --
+    adding it to `page.overlay` (for on-screen widgets like `SnackBar`)
+    instead of `page.services` (the root view's service lifecycle) rendered
+    it client-side as "Unknown Control FilePicker".
+    """
+    shell = Shell(page)
+
+    assert shell.file_picker in page.services
 
 
 # --- "+ Add File..." -------------------------------------------------------

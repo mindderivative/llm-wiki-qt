@@ -56,7 +56,12 @@ class Shell:
 
         self.graph = GraphCanvas()
         self.file_picker = ft.FilePicker()
-        page.overlay.append(self.file_picker)
+        # FilePicker is a Service, not a visual Control -- it belongs on
+        # page.services (attached to the root view's service lifecycle), not
+        # page.overlay (for on-screen controls like SnackBar). Putting it on
+        # overlay renders it as an unrecognized widget: "Unknown Control
+        # FilePicker".
+        page.services.append(self.file_picker)
         self.raw_watcher = RawWatcher(on_change=self._on_raw_changed)
         self.items_panel = ItemsPanel(on_add_file=self._add_file, on_check_raw=self._check_raw)
         self.git_panel = GitPanel(on_error=self._show_error)

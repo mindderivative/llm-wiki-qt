@@ -16,6 +16,10 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and
 - The [Flutter SDK](https://docs.flutter.dev/get-started/install/linux) —
   only to **package** the desktop app (`flet build`); the CLI, the MCP
   server, and running the app from source all work without it
+- [Zenity](https://help.gnome.org/users/zenity/stable/) — only for the
+  desktop app's "+ Add File…" native file dialog (`sudo apt-get install
+  zenity` on Debian/Ubuntu, or your distro's equivalent). Not needed for
+  the CLI, the MCP server, or anything else in the app
 - A local `llama-server` instance (or compatible OpenAI-API endpoint) for
   ingestion and search — everything else (vault management, linking,
   linting, git) works with zero LLM connectivity.

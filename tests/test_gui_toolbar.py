@@ -48,7 +48,7 @@ def vault_root(tmp_path: Path) -> Path:
 class _FakePage:
     """See `test_gui_pipeline.py`'s `_FakePage` -- same real thread-crossing
     double, extended with the handful of no-op attributes `Shell.__init__`
-    and its handlers touch (`add`, `title`, `update`, `overlay`) so a real
+    and its handlers touch (`add`, `title`, `update`, `services`) so a real
     `Shell` can be constructed without a live Flet session.
     """
 
@@ -57,7 +57,7 @@ class _FakePage:
         self._loop_thread = threading.Thread(target=self.loop.run_forever, daemon=True)
         self._loop_thread.start()
         self.title = ""
-        self.overlay: list[object] = []
+        self.services: list[object] = []
 
     def add(self, *_controls) -> None:
         pass
