@@ -176,9 +176,30 @@ def test_input_field_is_cleared_after_sending(page, vault_root: Path) -> None:
     panel.configure(vault_root, _make_client(), "test-model")
     panel._input.value = "What's in this vault?"
 
-    panel._on_submit(None)
+    page.run_task(panel._on_submit, None).result(timeout=5)
 
     assert panel._input.value == ""
+    _wait_until(lambda: not panel.busy)
+
+
+def test_on_submit_requests_focus_back_on_the_input(page, vault_root: Path) -> None:
+    """Sending clears and updates the input, which drops keyboard focus on
+    the client -- `_on_submit` must request it back so the next question
+    can be typed without re-clicking into the field.
+    """
+    panel = ChatPanel(page)
+    panel.configure(vault_root, _make_client(), "test-model")
+    panel._input.value = "Ping"
+    calls: list[bool] = []
+
+    async def fake_focus() -> None:
+        calls.append(True)
+
+    panel._input.focus = fake_focus
+
+    page.run_task(panel._on_submit, None).result(timeout=5)
+
+    assert calls == [True]
     _wait_until(lambda: not panel.busy)
 
 
@@ -194,13 +215,18 @@ def test_typing_indicator_visible_only_while_busy(page, vault_root: Path) -> Non
     assert panel._typing_indicator.visible is False
 
 
-def test_message_list_is_a_list_view_that_auto_scrolls(page) -> None:
+def test_message_list_auto_scrolls(page) -> None:
     """The right dock's chat panel must never leave a new reply scrolled out
-    of view -- ListView's `auto_scroll` guarantees that natively.
+    of view. `Column` (not `ListView`) on purpose: `ListView.builder`'s lazy
+    layout only estimates max scroll extent from already-built items, so it
+    did not reliably reach a message just appended -- `Column` wraps its
+    children in a `SingleChildScrollView`, which knows the real extent
+    immediately since layout there is eager, not lazy.
     """
     panel = ChatPanel(page)
 
-    assert isinstance(panel._message_list, ft.ListView)
+    assert isinstance(panel._message_list, ft.Column)
+    assert panel._message_list.scroll == ft.ScrollMode.AUTO
     assert panel._message_list.auto_scroll is True
 
 

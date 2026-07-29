@@ -71,9 +71,17 @@ class ChatPanel(ft.Container):
         self._panel_width = 0.0
         self.on_size_change = self._on_resized
 
-        # ListView (not Column): its `auto_scroll` keeps the latest message
-        # in view without any manual scroll_to bookkeeping here.
-        self._message_list = ft.ListView(spacing=10, expand=True, auto_scroll=True)
+        # `auto_scroll` keeps the latest message in view. A `ListView` looked
+        # like the more obvious fit, but its lazy `ListView.builder` only
+        # *estimates* max scroll extent from already-built items, so it did
+        # not reliably reach a just-appended message. `Column` wraps its
+        # children in a `SingleChildScrollView` instead -- eager layout, so
+        # the real extent is known immediately. Same pattern log_panel.py
+        # already uses successfully for the same "always show the newest
+        # line" requirement.
+        self._message_list = ft.Column(
+            spacing=10, scroll=ft.ScrollMode.AUTO, auto_scroll=True, expand=True
+        )
         self._typing_indicator = ft.Text(
             "assistant is typing…", size=11.5, italic=True, color=theme.TEXT_MUTED, visible=False
         )
@@ -138,8 +146,14 @@ class ChatPanel(ft.Container):
 
     # --- Sending ----------------------------------------------------------
 
-    def _on_submit(self, _e: ft.Event) -> None:
+    async def _on_submit(self, _e: ft.Event) -> None:
         self.send_message(self._input.value or "")
+        # send_message() clears `_input.value` and updates the control,
+        # which drops keyboard focus -- request it back so typing the next
+        # question doesn't require re-clicking into the field. Suppressed
+        # while unattached, same as `_update_if_attached()` below.
+        with contextlib.suppress(RuntimeError):
+            await self._input.focus()
 
     def send_message(self, text: str) -> None:
         if self.busy or not text.strip() or self._vault_root is None or self._client is None:
