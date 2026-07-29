@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from llm_wiki.ingest import enqueue_file, get_queue_item, list_queue, update_status
+from llm_wiki.ingest import (
+    enqueue_file,
+    get_queue_item,
+    list_queue,
+    scan_raw_directory,
+    update_status,
+)
 from llm_wiki.models import IngestionError, QueueStatus
 from llm_wiki.storage import connect
 
@@ -115,3 +121,67 @@ def test_list_queue_filters_by_status(conn, vault_root, source_file):
 
     completed_only = list_queue(conn, status=QueueStatus.COMPLETED)
     assert [i.id for i in completed_only] == [item_a.id]
+
+
+# --- scan_raw_directory ---------------------------------------------------
+
+
+def test_scan_raw_directory_queues_a_file_dropped_in_directly(conn, vault_root):
+    (vault_root / "raw" / "dropped.txt").write_text("hi", encoding="utf-8")
+
+    discovered = scan_raw_directory(conn, vault_root)
+
+    assert [d.title for d in discovered] == ["dropped"]
+    assert discovered[0].raw_path == Path("raw/dropped.txt")
+    assert discovered[0].archive_path is None
+    assert discovered[0].status is QueueStatus.QUEUED
+
+    queued = list_queue(conn)
+    assert [q.title for q in queued] == ["dropped"]
+
+
+def test_scan_raw_directory_skips_files_already_tracked(conn, vault_root, source_file):
+    item = enqueue_file(conn, vault_root, source_file, title="My Notes")
+
+    discovered = scan_raw_directory(conn, vault_root)
+
+    assert discovered == []
+    assert len(list_queue(conn)) == 1
+    assert list_queue(conn)[0].id == item.id
+
+
+def test_scan_raw_directory_ignores_the_sources_archive(conn, vault_root, source_file):
+    enqueue_file(conn, vault_root, source_file, title="My Notes")  # writes into .sources/
+
+    discovered = scan_raw_directory(conn, vault_root)
+
+    assert discovered == []
+
+
+def test_scan_raw_directory_is_idempotent(conn, vault_root):
+    (vault_root / "raw" / "dropped.txt").write_text("hi", encoding="utf-8")
+
+    first = scan_raw_directory(conn, vault_root)
+    second = scan_raw_directory(conn, vault_root)
+
+    assert len(first) == 1
+    assert second == []
+    assert len(list_queue(conn)) == 1
+
+
+def test_scan_raw_directory_with_no_raw_dir_returns_empty(conn, tmp_path):
+    empty_vault = tmp_path / "no-raw-vault"
+    empty_vault.mkdir()
+
+    assert scan_raw_directory(conn, empty_vault) == []
+
+
+def test_scan_raw_directory_only_queues_new_files(conn, vault_root):
+    (vault_root / "raw" / "existing.txt").write_text("a", encoding="utf-8")
+    scan_raw_directory(conn, vault_root)
+    (vault_root / "raw" / "new-one.txt").write_text("b", encoding="utf-8")
+
+    discovered = scan_raw_directory(conn, vault_root)
+
+    assert [d.title for d in discovered] == ["new-one"]
+    assert len(list_queue(conn)) == 2

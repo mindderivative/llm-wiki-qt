@@ -48,8 +48,8 @@ def vault_root(tmp_path: Path) -> Path:
 class _FakePage:
     """See `test_gui_pipeline.py`'s `_FakePage` -- same real thread-crossing
     double, extended with the handful of no-op attributes `Shell.__init__`
-    and its handlers touch (`add`, `title`, `update`) so a real `Shell` can
-    be constructed without a live Flet session.
+    and its handlers touch (`add`, `title`, `update`, `overlay`) so a real
+    `Shell` can be constructed without a live Flet session.
     """
 
     def __init__(self) -> None:
@@ -57,6 +57,7 @@ class _FakePage:
         self._loop_thread = threading.Thread(target=self.loop.run_forever, daemon=True)
         self._loop_thread.start()
         self.title = ""
+        self.overlay: list[object] = []
 
     def add(self, *_controls) -> None:
         pass
@@ -237,41 +238,44 @@ def test_shell_wires_vault_open_through_a_real_pipeline_run(
     _stub_out_llama_client(monkeypatch)
     shell = Shell(page)
 
-    _on_loop(page, shell.controller.open_vault, vault_root)
-    assert shell.pipeline_adapter._vault_root == vault_root
-    assert isinstance(shell.pipeline_adapter._client, LlamaClient)
+    try:
+        _on_loop(page, shell.controller.open_vault, vault_root)
+        assert shell.pipeline_adapter._vault_root == vault_root
+        assert isinstance(shell.pipeline_adapter._client, LlamaClient)
 
-    conn = connect(vault_root / ".llm-wiki" / "db.sqlite3")
-    upload_dir = tmp_path / "uploads"
-    upload_dir.mkdir()
-    source = upload_dir / "doc.txt"
-    source.write_text("Raw content.", encoding="utf-8")
-    item = enqueue_file(conn, vault_root, source, title="doc")
+        conn = connect(vault_root / ".llm-wiki" / "db.sqlite3")
+        upload_dir = tmp_path / "uploads"
+        upload_dir.mkdir()
+        source = upload_dir / "doc.txt"
+        source.write_text("Raw content.", encoding="utf-8")
+        item = enqueue_file(conn, vault_root, source, title="doc")
 
-    stages_seen = []
-    real_on_item_completed = shell.pipeline_adapter.on_item_completed
+        stages_seen = []
+        real_on_item_completed = shell.pipeline_adapter.on_item_completed
 
-    def _spy_on_item_completed(title: str) -> None:
-        real_on_item_completed(title)  # Shell's own handler: refreshes the panels
-        stages_seen.append((title, shell.status_stage.value))
+        def _spy_on_item_completed(title: str) -> None:
+            real_on_item_completed(title)  # Shell's own handler: refreshes the panels
+            stages_seen.append((title, shell.status_stage.value))
 
-    shell.pipeline_adapter.on_item_completed = _spy_on_item_completed
+        shell.pipeline_adapter.on_item_completed = _spy_on_item_completed
 
-    _on_loop(page, shell.toolbar._set_mode, False)  # Manual -> Step
-    _on_loop(page, shell.toolbar._run_or_step, None)
+        _on_loop(page, shell.toolbar._set_mode, False)  # Manual -> Step
+        _on_loop(page, shell.toolbar._run_or_step, None)
 
-    _wait_until(lambda: not shell.pipeline_adapter.running)
+        _wait_until(lambda: not shell.pipeline_adapter.running)
 
-    # Transiently "Completed" while the item finished, per _on_item_completed
-    # -- captured before on_run_finished's own reset overwrites it.
-    assert stages_seen == [("doc", "Completed")]
+        # Transiently "Completed" while the item finished, per _on_item_completed
+        # -- captured before on_run_finished's own reset overwrites it.
+        assert stages_seen == [("doc", "Completed")]
 
-    # Final, settled state: on_run_finished resets the status bar and
-    # get_queue_item confirms the compile itself actually succeeded.
-    assert shell.status_stage.value == "Idle"
-    assert shell.status_file.value == "—"
-    assert shell.progress_bar.value == 0
-    assert get_queue_item(connect(vault_root / ".llm-wiki" / "db.sqlite3"), item.id).status is (
-        QueueStatus.COMPLETED
-    )
-    assert shell.items_panel.raw_items  # refreshed post-completion
+        # Final, settled state: on_run_finished resets the status bar and
+        # get_queue_item confirms the compile itself actually succeeded.
+        assert shell.status_stage.value == "Idle"
+        assert shell.status_file.value == "—"
+        assert shell.progress_bar.value == 0
+        assert get_queue_item(
+            connect(vault_root / ".llm-wiki" / "db.sqlite3"), item.id
+        ).status is QueueStatus.COMPLETED
+        assert shell.items_panel.raw_items  # refreshed post-completion
+    finally:
+        shell.raw_watcher.stop()  # opening the vault started it (auto_watch_raw defaults on)

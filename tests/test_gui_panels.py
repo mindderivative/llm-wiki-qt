@@ -34,13 +34,41 @@ def vault_root(tmp_path: Path) -> Path:
     return root
 
 
+async def _noop_add_file(_e) -> None:
+    pass
+
+
+def _noop_check_raw(_e) -> None:
+    pass
+
+
+def _items_panel() -> ItemsPanel:
+    return ItemsPanel(on_add_file=_noop_add_file, on_check_raw=_noop_check_raw)
+
+
 # --- ItemsPanel ---------------------------------------------------------
 
 
 def test_items_panel_empty_with_no_connection() -> None:
-    panel = ItemsPanel()
+    panel = _items_panel()
     assert panel.raw_items == []
     assert panel.queue_items == []
+
+
+def test_items_panel_add_file_and_check_raw_disabled_without_a_vault() -> None:
+    panel = _items_panel()
+    assert panel._add_file_button.disabled is True
+    assert panel._check_raw_button.disabled is True
+
+
+def test_items_panel_add_file_and_check_raw_enabled_once_connected(vault_root: Path) -> None:
+    conn = connect(vault_root / ".llm-wiki" / "db.sqlite3")
+    panel = _items_panel()
+
+    panel.set_connection(conn)
+
+    assert panel._add_file_button.disabled is False
+    assert panel._check_raw_button.disabled is False
 
 
 def test_items_panel_splits_completed_from_in_progress(vault_root: Path) -> None:
@@ -49,7 +77,7 @@ def test_items_panel_splits_completed_from_in_progress(vault_root: Path) -> None
     src.write_text("hello", encoding="utf-8")
     item = enqueue_file(conn, vault_root, src, title="Doc One")
 
-    panel = ItemsPanel()
+    panel = _items_panel()
     panel.set_connection(conn)
     assert len(panel.queue_items) == 1
     assert panel.raw_items == []
@@ -65,7 +93,7 @@ def test_items_panel_splits_completed_from_in_progress(vault_root: Path) -> None
 
 def test_items_panel_refresh_picks_up_new_items(vault_root: Path) -> None:
     conn = connect(vault_root / ".llm-wiki" / "db.sqlite3")
-    panel = ItemsPanel()
+    panel = _items_panel()
     panel.set_connection(conn)
     assert panel.queue_items == []
 

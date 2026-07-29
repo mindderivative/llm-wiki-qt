@@ -622,6 +622,7 @@ dependencies = [
     { name = "python-frontmatter" },
     { name = "sqlite-vec" },
     { name = "typer" },
+    { name = "watchdog" },
 ]
 
 [package.dev-dependencies]
@@ -650,6 +651,7 @@ requires-dist = [
     { name = "python-frontmatter", specifier = ">=1.3.0" },
     { name = "sqlite-vec", specifier = ">=0.1.9" },
     { name = "typer", specifier = ">=0.27.0" },
+    { name = "watchdog", specifier = ">=6.0.0" },
 ]
 
 [package.metadata.requires-dev]

@@ -26,8 +26,10 @@ from llm_wiki.gui.menu import build_menu_bar
 from llm_wiki.gui.pipeline_adapter import PipelineAdapter
 from llm_wiki.gui.splitter import ResizeHandle
 from llm_wiki.gui.toolbar import Toolbar
+from llm_wiki.ingest import RawWatcher, enqueue_file, scan_raw_directory
 from llm_wiki.llm.client import DEFAULT_API_KEY, LlamaClient
 from llm_wiki.mcp.process import McpProcess
+from llm_wiki.models import LLMWikiError
 
 LEFT_WIDTH = 280
 RIGHT_WIDTH = 320
@@ -53,7 +55,10 @@ class Shell:
         self.controller.subscribe(self._on_vault_changed)
 
         self.graph = GraphCanvas()
-        self.items_panel = ItemsPanel()
+        self.file_picker = ft.FilePicker()
+        page.overlay.append(self.file_picker)
+        self.raw_watcher = RawWatcher(on_change=self._on_raw_changed)
+        self.items_panel = ItemsPanel(on_add_file=self._add_file, on_check_raw=self._check_raw)
         self.git_panel = GitPanel(on_error=self._show_error)
         self.left_dock = DockArea([("Items", self.items_panel), ("Git", self.git_panel)])
         self.health_panel = HealthPanel()
@@ -201,6 +206,7 @@ class Shell:
         but emitting a never-awaited RuntimeWarning.
         """
         self.mcp_process.stop()  # don't leave an orphaned subprocess behind
+        self.raw_watcher.stop()
         self.page.run_task(self.page.window.close)
 
     def _on_vault_changed(self) -> None:
@@ -214,6 +220,7 @@ class Shell:
         llm = self.controller.settings.llm_provider
         client = LlamaClient(base_url=llm.base_url, api_key=llm.api_key or DEFAULT_API_KEY)
         self.pipeline_adapter.configure(self.controller.vault_path, client, llm.chat_model)
+        self._sync_raw_watcher()
 
         self.page.title = (
             f"LLM-Wiki -- {self.controller.vault_name}"
@@ -222,6 +229,61 @@ class Shell:
         )
         self.toolbar.sync()
         self.page.update()
+
+    def _sync_raw_watcher(self) -> None:
+        """(Re)targets the watcher at the active vault, respecting the
+        Settings dialog's "Watch raw/ for new files" toggle. Called on
+        every vault change and after Settings is saved, so flipping the
+        toggle takes effect without reopening the vault.
+        """
+        self.raw_watcher.stop()
+        if self.controller.has_vault and self.controller.settings.vault.auto_watch_raw:
+            self.raw_watcher.start(self.controller.vault_path)
+
+    def _on_raw_changed(self) -> None:
+        """`RawWatcher`'s callback -- fires on watchdog's own thread, so it
+        has to hop back to the UI/event-loop thread via `run_task()` before
+        touching `AppController.conn`, same as `pipeline_adapter.py`.
+        """
+        self.page.run_task(self._dispatch_raw_changed)
+
+    async def _dispatch_raw_changed(self) -> None:
+        if self.controller.conn is None or self.controller.vault_path is None:
+            return
+        discovered = scan_raw_directory(self.controller.conn, self.controller.vault_path)
+        if discovered:
+            self.items_panel.refresh()
+
+    async def _add_file(self, _e: ft.Event) -> None:
+        """Stages one or more picked files into the queue -- the missing half
+        of what the CLI's `llm-wiki ingest` does in one shot (it also
+        immediately compiles; here that's a separate step, via the toolbar's
+        already-working Run/Step controls).
+        """
+        if self.controller.conn is None or self.controller.vault_path is None:
+            return
+        files = await self.file_picker.pick_files(
+            dialog_title="Select documents to ingest", allow_multiple=True
+        )
+        for picked in files:
+            try:
+                enqueue_file(self.controller.conn, self.controller.vault_path, picked.path)
+            except LLMWikiError as exc:
+                self._show_error(str(exc))
+        if files:
+            self.items_panel.refresh()
+
+    def _check_raw(self, _e: ft.Event) -> None:
+        """Queues any files sitting in `raw/` that aren't tracked yet -- e.g.
+        dropped in directly through a file manager rather than picked here.
+        """
+        if self.controller.conn is None or self.controller.vault_path is None:
+            return
+        discovered = scan_raw_directory(self.controller.conn, self.controller.vault_path)
+        if discovered:
+            self.items_panel.refresh()
+        else:
+            self._show_error("No new files found in raw/.")
 
     # --- Pipeline adapter events (all fire on the UI thread) ----------------
 
@@ -297,8 +359,17 @@ class Shell:
         if not self.controller.has_vault:
             self._show_error("No active vault -- open or create one first.")
             return
-        dialog = build_settings_dialog(self.controller, self._close_dialog)
+        dialog = build_settings_dialog(self.controller, self._close_settings_dialog)
         self.page.show_dialog(dialog)
+
+    def _close_settings_dialog(self) -> None:
+        """Distinct from `_close_dialog`: the "Watch raw/" toggle lives in
+        Settings, so closing it (Save or Cancel; re-syncing on Cancel is
+        just a harmless no-op re-read) is the one point to re-sync the
+        watcher without requiring the vault to be reopened.
+        """
+        self._close_dialog()
+        self._sync_raw_watcher()
 
     def _close_dialog(self) -> None:
         self.page.pop_dialog()

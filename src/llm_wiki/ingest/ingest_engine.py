@@ -78,6 +78,62 @@ def enqueue_file(
     )
 
 
+def scan_raw_directory(conn: sqlite3.Connection, vault_root: Path | str) -> list[QueueItem]:
+    """Finds files sitting in `raw/` that aren't tracked by any queue row --
+    e.g. dropped in directly by the user, outside `enqueue_file()` -- and
+    queues them in place. No archive copy: the file is already where
+    `compile_queued_item()` expects it, so there's nothing to stage.
+
+    Only the top level of `raw/` is scanned, so `.sources/` (the archive
+    `enqueue_file()` writes originals to) is never mistaken for new input.
+    """
+    vault_root = Path(vault_root)
+    raw_dir = vault_root / "raw"
+    if not raw_dir.is_dir():
+        return []
+
+    tracked = {Path(row["raw_path"]) for row in conn.execute("SELECT raw_path FROM queue")}
+    discovered = []
+    for path in sorted(raw_dir.iterdir()):
+        if not path.is_file():
+            continue
+        rel_raw_path = path.relative_to(vault_root)
+        if rel_raw_path in tracked:
+            continue
+        discovered.append(_register_existing_raw_file(conn, rel_raw_path, path.stem))
+    return discovered
+
+
+def _register_existing_raw_file(
+    conn: sqlite3.Connection, rel_raw_path: Path, title: str
+) -> QueueItem:
+    now = datetime.now(UTC)
+    cursor = conn.execute(
+        """
+        INSERT INTO queue (title, raw_path, archive_path, status, error, created_at, updated_at)
+        VALUES (:title, :raw_path, NULL, :status, NULL, :created_at, :updated_at)
+        """,
+        {
+            "title": title,
+            "raw_path": str(rel_raw_path),
+            "status": QueueStatus.QUEUED.value,
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat(),
+        },
+    )
+    conn.commit()
+
+    return QueueItem(
+        id=cursor.lastrowid,
+        title=title,
+        raw_path=rel_raw_path,
+        archive_path=None,
+        status=QueueStatus.QUEUED,
+        created_at=now,
+        updated_at=now,
+    )
+
+
 def update_status(
     conn: sqlite3.Connection,
     item_id: int,
