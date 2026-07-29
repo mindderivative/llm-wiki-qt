@@ -3,10 +3,18 @@
 The mockup's Settings tabs list generic fields (temperature, telemetry, a
 hosted-provider API key) that this app has no equivalent for -- it runs
 against a local llama-server and stores `AppSettings`. The tabbed shape is
-kept; the fields are the real ones, plus an MCP tab for the settings the
-mockup's toolbar controls imply.
+kept there, since Settings has exactly one entry point (Edit > Settings...).
+
+New Vault and Open Vault are the opposite case -- two separate File-menu
+items -- so each gets its own dedicated dialog rather than sharing one
+tabbed shell. Sharing one meant "New Vault..." could land on the wrong
+tab, and there was no way to browse for a location at all: a bare text
+field with no native picker, which also turned out not to support paste.
+Both dialogs now use `ft.FilePicker.get_directory_path()` for a real
+folder-browse dialog.
 """
 
+import contextlib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -61,10 +69,39 @@ def _plain_button(label: str, on_click) -> ft.Control:
     )
 
 
+def _path_field_with_browse(
+    field: ft.TextField, file_picker: ft.FilePicker, *, dialog_title: str
+) -> ft.Control:
+    """A path text field plus a Browse... button opening a native folder
+    picker. The field stays editable -- Browse fills it, it doesn't replace
+    it -- so a manually typed or pasted path still works.
+    """
+
+    async def browse(_e: ft.Event) -> None:
+        picked = await file_picker.get_directory_path(dialog_title=dialog_title)
+        if picked:
+            field.value = picked
+            with contextlib.suppress(RuntimeError):  # unattached in tests
+                field.update()
+
+    return ft.Row(
+        spacing=8,
+        controls=[
+            ft.Container(expand=True, content=field),
+            _plain_button("Browse…", browse),
+        ],
+    )
+
+
 def build_settings_dialog(
     controller: AppController, on_close: Callable[[], None]
 ) -> ft.AlertDialog:
-    """A tabbed editor over the active vault's `.llm-wiki-config`."""
+    """A tabbed editor over the active vault's `.llm-wiki-config`.
+
+    Tabs stay here (unlike the vault dialogs below) because Settings has
+    exactly one entry point -- Edit > Settings... -- so there's no "which
+    tab should this land on" ambiguity a shared dialog can get wrong.
+    """
     llm = controller.settings.llm_provider
     mcp = controller.settings.mcp_server
     vault = controller.settings.vault
@@ -174,16 +211,22 @@ def build_settings_dialog(
     )
 
 
-def build_vault_dialog(
+def build_open_vault_dialog(
     controller: AppController,
     on_close: Callable[[], None],
     on_error: Callable[[str], None],
+    file_picker: ft.FilePicker,
 ) -> ft.AlertDialog:
-    """One dialog with an Open tab (recent vaults) and a New tab (name + location)."""
-    open_path = _text_input("")
-    new_name = _text_input("")
-    new_location = _text_input(str(Path.home() / "Vaults"))
-    new_description = _text_input("")
+    """File > Open Vault... -- recent vaults, plus a browsable path field."""
+    path_field = _text_input("")
+
+    def do_open(path: str) -> None:
+        try:
+            controller.open_vault(path)
+        except Exception as exc:
+            on_error(str(exc))
+            return
+        on_close()
 
     def recent_row(path: Path) -> ft.Control:
         return ft.Container(
@@ -199,61 +242,95 @@ def build_vault_dialog(
             ),
         )
 
-    def do_open(path: str) -> None:
-        try:
-            controller.open_vault(path)
-        except Exception as exc:
-            on_error(str(exc))
-            return
-        on_close()
-
-    def do_create(_e: ft.Event) -> None:
-        target = Path(new_location.value) / (new_name.value or "vault")
-        try:
-            controller.create_vault(target, new_name.value, new_description.value)
-        except Exception as exc:
-            on_error(str(exc))
-            return
-        on_close()
-
     recents = controller.recent_vaults()
-    open_panel = ft.Container(
-        padding=ft.Padding(20, 16, 20, 16),
-        content=ft.Column(
-            spacing=4,
-            scroll=ft.ScrollMode.AUTO,
-            controls=[
-                *(recent_row(p) for p in recents),
-                *(
-                    []
-                    if recents
-                    else [ft.Text("No recent vaults", size=12.5, color=theme.TEXT_MUTED)]
-                ),
-                _field("Vault Path", open_path),
-                _plain_button("Open", lambda _e: do_open(open_path.value)),
-            ],
-        ),
-    )
-
-    new_panel = ft.Container(
-        padding=ft.Padding(20, 18, 20, 18),
-        content=ft.Column(
-            spacing=12,
-            controls=[
-                _field("Vault Name", new_name),
-                _field("Location", new_location),
-                _field("Description", new_description),
-            ],
-        ),
-    )
-
-    tabs = DockArea(panels=[("Open Vault", open_panel), ("New Vault", new_panel)], strip_height=44)
 
     return ft.AlertDialog(
         modal=True,
         bgcolor=theme.CHROME_BG,
         shape=ft.RoundedRectangleBorder(radius=12),
-        content=ft.Container(width=460, height=320, content=tabs),
+        title=ft.Text("Open Vault", size=14, weight=ft.FontWeight.W_600, color=theme.TEXT),
+        content=ft.Container(
+            width=460,
+            height=320,
+            padding=ft.Padding(4, 12, 4, 4),
+            content=ft.Column(
+                spacing=12,
+                controls=[
+                    ft.Column(
+                        spacing=4,
+                        scroll=ft.ScrollMode.AUTO,
+                        expand=True,
+                        controls=[
+                            *(recent_row(p) for p in recents),
+                            *(
+                                []
+                                if recents
+                                else [
+                                    ft.Text(
+                                        "No recent vaults", size=12.5, color=theme.TEXT_MUTED
+                                    )
+                                ]
+                            ),
+                        ],
+                    ),
+                    _field(
+                        "Vault Path",
+                        _path_field_with_browse(
+                            path_field, file_picker, dialog_title="Select a vault folder"
+                        ),
+                    ),
+                ],
+            ),
+        ),
+        actions=[
+            _plain_button("Cancel", lambda _e: on_close()),
+            _accent_button("Open", lambda _e: do_open(path_field.value)),
+        ],
+    )
+
+
+def build_new_vault_dialog(
+    controller: AppController,
+    on_close: Callable[[], None],
+    on_error: Callable[[str], None],
+    file_picker: ft.FilePicker,
+) -> ft.AlertDialog:
+    """File > New Vault... -- name, a browsable location, and a description."""
+    name_field = _text_input("")
+    location_field = _text_input(str(Path.home() / "Vaults"))
+    description_field = _text_input("")
+
+    def do_create(_e: ft.Event) -> None:
+        target = Path(location_field.value) / (name_field.value or "vault")
+        try:
+            controller.create_vault(target, name_field.value, description_field.value)
+        except Exception as exc:
+            on_error(str(exc))
+            return
+        on_close()
+
+    return ft.AlertDialog(
+        modal=True,
+        bgcolor=theme.CHROME_BG,
+        shape=ft.RoundedRectangleBorder(radius=12),
+        title=ft.Text("New Vault", size=14, weight=ft.FontWeight.W_600, color=theme.TEXT),
+        content=ft.Container(
+            width=460,
+            padding=ft.Padding(4, 12, 4, 4),
+            content=ft.Column(
+                spacing=12,
+                controls=[
+                    _field("Vault Name", name_field),
+                    _field(
+                        "Location",
+                        _path_field_with_browse(
+                            location_field, file_picker, dialog_title="Select a location"
+                        ),
+                    ),
+                    _field("Description", description_field),
+                ],
+            ),
+        ),
         actions=[
             _plain_button("Cancel", lambda _e: on_close()),
             _accent_button("Create", do_create),

@@ -44,6 +44,7 @@ class PipelineAdapter:
 
         # Assigned by the owning Shell; all fire on the UI (event-loop) thread.
         self.on_run_started: Callable[[int], None] | None = None
+        self.on_batch_size: Callable[[int], None] | None = None
         self.on_item_started: Callable[[str], None] | None = None
         self.on_item_stage: Callable[[str, CompileStage], None] | None = None
         self.on_item_completed: Callable[[str], None] | None = None
@@ -115,6 +116,9 @@ class PipelineAdapter:
             def on_progress(item: QueueItem, event: str) -> None:
                 self.page.run_task(self._dispatch_progress, item.title, item.error, event)
 
+            def on_batch_size(count: int) -> None:
+                self.page.run_task(self._dispatch_batch_size, count)
+
             run_pipeline(
                 conn,
                 self._client,
@@ -123,6 +127,7 @@ class PipelineAdapter:
                 chat_model=self._chat_model,
                 embedding_model=self._embedding_model,
                 on_progress=on_progress,
+                on_batch_size=on_batch_size,
                 should_pause=self._pause_event.is_set,
                 should_stop=self._stop_event.is_set,
             )
@@ -131,6 +136,17 @@ class PipelineAdapter:
         self.page.run_task(self._dispatch_finished)
 
     # --- Back on the UI thread, via page.run_task() --------------------------
+
+    async def _dispatch_batch_size(self, count: int) -> None:
+        """The *actual* item count `run_pipeline()` will process --
+        `min(requested batch_size, items actually queued)` -- fired once,
+        before any item starts. Distinct from `on_run_started`'s raw
+        `batch_size` argument, which is what was requested, not what's
+        really going to happen; using the latter for progress math is what
+        left a 1-item run against the default batch_size=25 stuck at 4%.
+        """
+        if self.on_batch_size:
+            self.on_batch_size(count)
 
     async def _dispatch_progress(self, title: str, error: str | None, event: str) -> None:
         if event == "starting" and self.on_item_started:

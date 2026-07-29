@@ -8,6 +8,7 @@ control trees and asserting on their structure -- no display required.
 """
 
 import ast
+import asyncio
 import inspect
 import json
 import re
@@ -21,7 +22,11 @@ import pytest
 from llm_wiki.gui import app as app_module
 from llm_wiki.gui import theme
 from llm_wiki.gui.app_controller import AppController
-from llm_wiki.gui.dialogs import build_settings_dialog, build_vault_dialog
+from llm_wiki.gui.dialogs import (
+    build_new_vault_dialog,
+    build_open_vault_dialog,
+    build_settings_dialog,
+)
 from llm_wiki.gui.dock import DockArea
 from llm_wiki.gui.graph_canvas import GraphCanvas
 from llm_wiki.gui.health_panel import HealthPanel
@@ -397,29 +402,122 @@ def test_settings_dialog_save_writes_edited_fields_to_disk(vault_root: Path) -> 
     assert closed == [True]
 
 
-def test_vault_dialog_has_open_and_new_tabs() -> None:
+def _path_field_and_browse_button(
+    dialog: ft.AlertDialog, index: int = -1
+) -> tuple[ft.TextField, ft.Control]:
+    """Reaches into a vault dialog's Location/Vault Path row: `_field(...)`
+    -> `_path_field_with_browse(...)`'s Row -> [Container(field), Browse].
+    `index` picks the field among the dialog's top-level controls -- the
+    Open Vault dialog has it last, New Vault has it in the middle.
+    """
+    row = dialog.content.content.controls[index].controls[1]
+    return row.controls[0].content, row.controls[1]
+
+
+def test_new_vault_and_open_vault_are_separate_dialogs() -> None:
+    """Regression: a single tabbed dialog meant New Vault... could land on
+    the Open Vault tab (two File-menu entry points sharing one dialog).
+    Each now has its own, with no tabs to land on the wrong one.
+    """
     controller = AppController()
-    dialog = build_vault_dialog(controller, on_close=lambda: None, on_error=lambda _m: None)
+    file_picker = ft.FilePicker()
 
-    assert [title for title, _panel in dialog.content.content.panels] == [
-        "Open Vault",
-        "New Vault",
-    ]
-
-
-def test_vault_dialog_surfaces_an_error_for_a_bad_path(tmp_path: Path) -> None:
-    controller = AppController()
-    errors: list[str] = []
-    dialog = build_vault_dialog(
-        controller, on_close=lambda: None, on_error=errors.append
+    open_dialog = build_open_vault_dialog(
+        controller, on_close=lambda: None, on_error=lambda _m: None, file_picker=file_picker
+    )
+    new_dialog = build_new_vault_dialog(
+        controller, on_close=lambda: None, on_error=lambda _m: None, file_picker=file_picker
     )
 
-    open_panel = dialog.content.content.panels[0][1]
-    path_field = open_panel.content.controls[-2].controls[1]
+    assert open_dialog.title.value == "Open Vault"
+    assert new_dialog.title.value == "New Vault"
+    assert not hasattr(open_dialog.content.content, "panels")  # no shared tabs
+    assert not hasattr(new_dialog.content.content, "panels")
+
+
+def test_open_vault_dialog_has_a_browsable_path_field_and_lists_recents() -> None:
+    controller = AppController()
+    file_picker = ft.FilePicker()
+
+    dialog = build_open_vault_dialog(
+        controller, on_close=lambda: None, on_error=lambda _m: None, file_picker=file_picker
+    )
+
+    path_field, browse_button = _path_field_and_browse_button(dialog)
+    assert path_field.value == ""
+    assert inspect.iscoroutinefunction(browse_button.on_click)
+    assert dialog.actions[-1].content.value == "Open"
+
+
+def test_open_vault_dialog_surfaces_an_error_for_a_bad_path(tmp_path: Path) -> None:
+    controller = AppController()
+    errors: list[str] = []
+    file_picker = ft.FilePicker()
+    dialog = build_open_vault_dialog(
+        controller, on_close=lambda: None, on_error=errors.append, file_picker=file_picker
+    )
+
+    path_field, _browse = _path_field_and_browse_button(dialog)
     path_field.value = str(tmp_path / "does-not-exist")
-    open_panel.content.controls[-1].on_click(None)
+    dialog.actions[-1].on_click(None)
 
     assert errors and "vault" in errors[0].lower()
+
+
+def test_open_vault_dialog_browse_fills_the_path_field_from_the_native_picker(
+    tmp_path: Path,
+) -> None:
+    controller = AppController()
+    file_picker = ft.FilePicker()
+    picked = str(tmp_path / "some-vault")
+
+    async def fake_get_directory_path(**_kwargs):
+        return picked
+
+    file_picker.get_directory_path = fake_get_directory_path
+    dialog = build_open_vault_dialog(
+        controller, on_close=lambda: None, on_error=lambda _m: None, file_picker=file_picker
+    )
+    path_field, browse_button = _path_field_and_browse_button(dialog)
+
+    asyncio.run(browse_button.on_click(None))
+
+    assert path_field.value == picked
+
+
+def test_open_vault_dialog_browse_cancelled_leaves_the_field_untouched() -> None:
+    controller = AppController()
+    file_picker = ft.FilePicker()
+
+    async def fake_get_directory_path(**_kwargs):
+        return None  # user cancelled the native picker
+
+    file_picker.get_directory_path = fake_get_directory_path
+    dialog = build_open_vault_dialog(
+        controller, on_close=lambda: None, on_error=lambda _m: None, file_picker=file_picker
+    )
+    path_field, browse_button = _path_field_and_browse_button(dialog)
+    path_field.value = "unchanged"
+
+    asyncio.run(browse_button.on_click(None))
+
+    assert path_field.value == "unchanged"
+
+
+def test_new_vault_dialog_has_name_location_and_description_fields() -> None:
+    controller = AppController()
+    file_picker = ft.FilePicker()
+
+    dialog = build_new_vault_dialog(
+        controller, on_close=lambda: None, on_error=lambda _m: None, file_picker=file_picker
+    )
+
+    labels = [field.controls[0].value for field in dialog.content.content.controls]
+    assert labels == ["Vault Name", "Location", "Description"]
+    location_field, browse_button = _path_field_and_browse_button(dialog, index=1)
+    assert str(Path.home() / "Vaults") in location_field.value
+    assert inspect.iscoroutinefunction(browse_button.on_click)
+    assert dialog.actions[-1].content.value == "Create"
 
 
 # --- Async window APIs ------------------------------------------------

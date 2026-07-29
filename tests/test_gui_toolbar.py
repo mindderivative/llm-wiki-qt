@@ -238,7 +238,8 @@ def test_single_item_step_moves_through_all_six_stage_checkpoints(page):
     still has real, separately-reported sub-stages.
     """
     shell = Shell(page)
-    shell._on_run_started(1)
+    shell._on_run_started(25)  # requested batch size -- deliberately not what's used below
+    shell._on_batch_size_known(1)  # the actual count run_pipeline() found queued
 
     shell._on_item_started("doc")
     assert shell.progress_bar.value == pytest.approx(1 / 6)
@@ -272,6 +273,7 @@ def test_batch_progress_combines_completed_items_and_current_item_stage(page):
     """
     shell = Shell(page)
     shell._on_run_started(2)
+    shell._on_batch_size_known(2)  # matches what was requested here, unlike the test above
 
     shell._on_item_started("doc-a")
     assert shell.progress_bar.value == pytest.approx(1 / 6 / 2)
@@ -300,6 +302,7 @@ def test_on_run_finished_does_not_blank_the_completed_status(page):
     shell = Shell(page)
 
     shell._on_run_started(1)
+    shell._on_batch_size_known(1)
     shell._on_item_started("doc")
     shell._on_item_completed("doc")
     assert shell.status_stage.value == "Completed"

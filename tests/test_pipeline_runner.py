@@ -165,6 +165,46 @@ def test_run_pipeline_on_progress_fires_expected_events(
     ]
 
 
+def test_run_pipeline_reports_the_actual_count_not_the_requested_batch_size(
+    monkeypatch: pytest.MonkeyPatch, conn, vault_root: Path, tmp_path: Path
+) -> None:
+    """Regression: a caller driving a progress bar off the raw `batch_size`
+    argument (25, the toolbar's default) under-filled it whenever fewer
+    items were actually queued -- one real item landed at 1/25 = 4% on
+    completion instead of 100%. `on_batch_size` reports the real count.
+    """
+    _enqueue(conn, vault_root, tmp_path, "doc-a")  # only one item queued
+    client, _ = _make_client(monkeypatch, _summary_and_empty_entities())
+
+    counts: list[int] = []
+    run_pipeline(
+        conn,
+        client,
+        vault_root,
+        batch_size=25,  # requested far more than what's actually available
+        chat_model="test-model",
+        on_batch_size=counts.append,
+    )
+
+    assert counts == [1]
+
+
+def test_run_pipeline_reports_zero_batch_size_when_nothing_is_queued(
+    conn, vault_root: Path
+) -> None:
+    counts: list[int] = []
+    run_pipeline(
+        conn,
+        LlamaClient(client=None),  # never reached -- nothing queued to process
+        vault_root,
+        batch_size=25,
+        chat_model="test-model",
+        on_batch_size=counts.append,
+    )
+
+    assert counts == [0]
+
+
 def test_run_pipeline_partial_batch_failure_does_not_abort_rest(
     monkeypatch: pytest.MonkeyPatch, conn, vault_root: Path, tmp_path: Path
 ) -> None:

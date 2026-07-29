@@ -43,10 +43,19 @@ def run_pipeline(
     chat_model: str,
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     on_progress: Callable[[QueueItem, str], None] | None = None,
+    on_batch_size: Callable[[int], None] | None = None,
     should_pause: Callable[[], bool] | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> PipelineRunResult:
     """Processes up to `batch_size` `QUEUED` items sequentially.
+
+    `on_batch_size(count)` fires once, before any item starts, with the
+    *actual* number of items about to be processed --
+    `min(batch_size, items actually queued)`, not the raw `batch_size`
+    argument. A caller driving a progress bar off of `batch_size` itself
+    (rather than this) under-fills it whenever fewer items are queued than
+    requested: e.g. one real item against a default `batch_size=25` lands
+    at 1/25 = 4% on completion, not 100%.
 
     `on_progress(item, event)` fires with `event` in `{"starting",
     "completed", "error"}` before/after each item. `should_stop()` is
@@ -62,6 +71,8 @@ def run_pipeline(
     should_pause = should_pause or (lambda: False)
 
     queued_items = list_queue(conn, status=QueueStatus.QUEUED)[:batch_size]
+    if on_batch_size:
+        on_batch_size(len(queued_items))
     if not queued_items:
         logger.info("No queued items to process")
         return result

@@ -14,7 +14,11 @@ import flet as ft
 from llm_wiki.graph import get_graph_data
 from llm_wiki.gui import theme
 from llm_wiki.gui.app_controller import AppController
-from llm_wiki.gui.dialogs import build_settings_dialog, build_vault_dialog
+from llm_wiki.gui.dialogs import (
+    build_new_vault_dialog,
+    build_open_vault_dialog,
+    build_settings_dialog,
+)
 from llm_wiki.gui.dock import DockArea
 from llm_wiki.gui.git_panel import GitPanel
 from llm_wiki.gui.graph_canvas import GraphCanvas
@@ -148,8 +152,8 @@ class Shell:
         return build_menu_bar(
             vault_label=label,
             recent_vaults=[str(p) for p in self.controller.recent_vaults()],
-            on_new_vault=lambda _e: self._open_vault_dialog(),
-            on_open_vault=lambda _e: self._open_vault_dialog(),
+            on_new_vault=lambda _e: self._open_new_vault_dialog(),
+            on_open_vault=lambda _e: self._open_open_vault_dialog(),
             on_open_recent=self._open_recent,
             on_settings=lambda _e: self._open_settings_dialog(),
             on_exit=lambda _e: self._exit(),
@@ -310,6 +314,7 @@ class Shell:
 
     def _wire_pipeline_events(self) -> None:
         self.pipeline_adapter.on_run_started = self._on_run_started
+        self.pipeline_adapter.on_batch_size = self._on_batch_size_known
         self.pipeline_adapter.on_item_started = self._on_item_started
         self.pipeline_adapter.on_item_stage = self._on_item_stage
         self.pipeline_adapter.on_item_completed = self._on_item_completed
@@ -318,8 +323,17 @@ class Shell:
         self.pipeline_adapter.on_state_changed = self.toolbar.sync
 
     def _on_run_started(self, batch_size: int) -> None:
-        self._batch_total = batch_size
+        # _batch_total is deliberately NOT set to batch_size here -- that's
+        # what was *requested*, not what's actually queued.
+        # on_batch_size (fired moments later, once run_pipeline() has
+        # queried the real count) sets it correctly; a 1-item run against
+        # the default batch_size=25 used to land at 1/25 = 4% on completion.
+        self._batch_total = 0
         self._batch_done = 0
+        self._update_progress()
+
+    def _on_batch_size_known(self, count: int) -> None:
+        self._batch_total = count
         self._update_progress()
 
     def _on_item_started(self, title: str) -> None:
@@ -394,8 +408,16 @@ class Shell:
         except Exception as exc:
             self._show_error(str(exc))
 
-    def _open_vault_dialog(self) -> None:
-        dialog = build_vault_dialog(self.controller, self._close_dialog, self._show_error)
+    def _open_new_vault_dialog(self) -> None:
+        dialog = build_new_vault_dialog(
+            self.controller, self._close_dialog, self._show_error, self.file_picker
+        )
+        self.page.show_dialog(dialog)
+
+    def _open_open_vault_dialog(self) -> None:
+        dialog = build_open_vault_dialog(
+            self.controller, self._close_dialog, self._show_error, self.file_picker
+        )
         self.page.show_dialog(dialog)
 
     def _open_settings_dialog(self) -> None:
