@@ -13,6 +13,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from loguru import logger
 from pydantic import BaseModel, Field
 
 from llm_wiki.compiler.compiler_engine import CompileResult, compile_queued_item
@@ -61,6 +62,10 @@ def run_pipeline(
     should_pause = should_pause or (lambda: False)
 
     queued_items = list_queue(conn, status=QueueStatus.QUEUED)[:batch_size]
+    if not queued_items:
+        logger.info("No queued items to process")
+        return result
+    logger.info(f"Processing batch of {len(queued_items)} item(s)")
 
     for item in queued_items:
         while should_pause() and not should_stop():
@@ -92,6 +97,13 @@ def run_pipeline(
         result.processed.append(item)
         if on_progress:
             on_progress(item, "completed")
+
+    if result.stopped_early:
+        logger.info(f"Batch stopped early: {len(result.processed)} processed")
+    elif result.errors:
+        logger.info(
+            f"Batch finished: {len(result.processed)} processed, {len(result.errors)} failed"
+        )
 
     return result
 

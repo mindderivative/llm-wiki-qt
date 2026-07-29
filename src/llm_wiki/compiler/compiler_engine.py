@@ -11,6 +11,7 @@ import sqlite3
 from pathlib import Path
 
 import frontmatter
+from loguru import logger
 from pydantic import BaseModel
 
 from llm_wiki.ingest.atomizer import atomize
@@ -90,16 +91,19 @@ def compile_queued_item(
     """
     vault_root = Path(vault_root)
     queue_item = get_queue_item(conn, queue_item_id)
+    logger.info(f"Ingest stage started for {queue_item.title}")
 
     try:
         raw_text = (vault_root / queue_item.raw_path).read_text(encoding="utf-8")
 
         update_status(conn, queue_item_id, QueueStatus.PARSING)
         chunks = atomize(raw_text, queue_item_id=queue_item_id)
+        logger.info(f"Atomized into {len(chunks)} chunk(s)")
 
         update_status(conn, queue_item_id, QueueStatus.ANALYZING)
         summary_text = _generate_summary(client, chat_model, queue_item.title, raw_text)
         entities = _extract_entities(client, chat_model, summary_text)
+        logger.info(f"Extracted {len(entities)} entity/concept note(s)")
 
         update_status(conn, queue_item_id, QueueStatus.CASCADE)
         source_path, source_slug = _write_source_note(vault_root, queue_item, summary_text)
@@ -110,16 +114,20 @@ def compile_queued_item(
             note_path = _cascade_update_note(vault_root, client, chat_model, extracted, source_slug)
             upsert_note_from_file(conn, vault_root, note_path)
             entity_paths.append(note_path)
+        logger.info(f"Linked {len(entity_paths)} note(s) to {source_slug}")
 
         chunk_ids = _persist_and_embed_chunks(conn, client, embedding_model, chunks)
+        logger.info(f"Embedded {len(chunk_ids)} chunk(s)")
 
         update_status(conn, queue_item_id, QueueStatus.COMPLETED)
+        logger.info(f"Compilation completed for {queue_item.title}")
         return CompileResult(
             source_path=source_path, entity_paths=entity_paths, chunk_ids=chunk_ids
         )
 
     except Exception as exc:
         update_status(conn, queue_item_id, QueueStatus.ERROR, error=str(exc))
+        logger.error(f"Compilation failed for {queue_item.title}: {exc}")
         raise CompilationError(f"Compilation failed for queue item {queue_item_id}: {exc}") from exc
 
 

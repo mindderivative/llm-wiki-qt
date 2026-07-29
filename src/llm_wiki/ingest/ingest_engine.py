@@ -11,6 +11,8 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+from loguru import logger
+
 from llm_wiki.models import IngestionError, QueueItem, QueueStatus
 
 
@@ -66,6 +68,7 @@ def enqueue_file(
         },
     )
     conn.commit()
+    logger.info(f"Queued '{resolved_title}' as item #{cursor.lastrowid} ({rel_raw_path})")
 
     return QueueItem(
         id=cursor.lastrowid,
@@ -101,6 +104,8 @@ def scan_raw_directory(conn: sqlite3.Connection, vault_root: Path | str) -> list
         if rel_raw_path in tracked:
             continue
         discovered.append(_register_existing_raw_file(conn, rel_raw_path, path.stem))
+    if discovered:
+        logger.info(f"Found {len(discovered)} untracked file(s) in raw/ -- queued")
     return discovered
 
 

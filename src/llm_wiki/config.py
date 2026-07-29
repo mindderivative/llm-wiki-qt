@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from loguru import logger
 from pydantic import BaseModel, Field
 from pydantic_settings import (
     BaseSettings,
@@ -124,3 +125,4 @@ class AppSettings(BaseSettings):
         existing["vault"] = self.vault.model_dump(mode="json")
 
         config_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        logger.info(f"Settings saved to {config_path}")

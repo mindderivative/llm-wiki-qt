@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from loguru import logger
+
 
 class McpProcess:
     """Starts/stops/restarts the MCP server as a managed subprocess."""
@@ -50,6 +52,7 @@ class McpProcess:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        logger.info(f"MCP server started (pid {self._proc.pid}, {transport} on {host}:{port})")
 
     def stop(self, *, timeout: float = 5.0) -> None:
         if self._proc is None:
@@ -60,6 +63,7 @@ class McpProcess:
         except subprocess.TimeoutExpired:
             self._proc.kill()
             self._proc.wait()
+        logger.info("MCP server stopped")
         self._proc = None
 
     def restart(

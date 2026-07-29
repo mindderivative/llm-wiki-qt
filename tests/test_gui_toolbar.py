@@ -232,6 +232,30 @@ def _stub_out_llama_client(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("llm_wiki.gui.app.LlamaClient", lambda **_kwargs: fake_client)
 
 
+def test_on_run_finished_does_not_blank_the_completed_status(page):
+    """Regression: `_on_item_completed` and `_on_run_finished` fire
+    back-to-back on the same event-loop thread with no yield between them
+    (`PipelineAdapter._worker()` schedules both `run_task()` calls in
+    immediate succession), so the old reset-to-Idle/0% in `_on_run_finished`
+    could overwrite the completed state before the client ever rendered a
+    frame showing it -- the progress bar looked like it "never moved."
+    """
+    shell = Shell(page)
+
+    shell._on_run_started(1)
+    shell._on_item_started("doc")
+    shell._on_item_completed("doc")
+    assert shell.status_stage.value == "Completed"
+    assert shell.progress_bar.value == 1
+
+    shell._on_run_finished()
+
+    assert shell.status_stage.value == "Completed"
+    assert shell.status_file.value == "doc"
+    assert shell.progress_bar.value == 1
+    assert shell.progress_label.value == "100%"
+
+
 def test_shell_wires_vault_open_through_a_real_pipeline_run(
     page, vault_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -264,15 +288,16 @@ def test_shell_wires_vault_open_through_a_real_pipeline_run(
 
         _wait_until(lambda: not shell.pipeline_adapter.running)
 
-        # Transiently "Completed" while the item finished, per _on_item_completed
-        # -- captured before on_run_finished's own reset overwrites it.
         assert stages_seen == [("doc", "Completed")]
 
-        # Final, settled state: on_run_finished resets the status bar and
-        # get_queue_item confirms the compile itself actually succeeded.
-        assert shell.status_stage.value == "Idle"
-        assert shell.status_file.value == "—"
-        assert shell.progress_bar.value == 0
+        # Settled state: on_run_finished deliberately leaves the status bar
+        # showing the last item's result rather than blanking it back to
+        # Idle/0% (see its docstring -- that reset used to race the client
+        # out of ever rendering the completed frame at all). get_queue_item
+        # confirms the compile itself actually succeeded.
+        assert shell.status_stage.value == "Completed"
+        assert shell.status_file.value == "doc"
+        assert shell.progress_bar.value == 1
         assert get_queue_item(
             connect(vault_root / ".llm-wiki" / "db.sqlite3"), item.id
         ).status is QueueStatus.COMPLETED

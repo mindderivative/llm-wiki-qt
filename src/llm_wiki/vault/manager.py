@@ -8,6 +8,8 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+from loguru import logger
+
 from llm_wiki.models import VaultInfo, VaultNotFoundError
 
 CONFIG_FILENAME = ".llm-wiki-config"
@@ -87,6 +89,7 @@ def create_vault(
             encoding="utf-8",
         )
 
+    logger.info(f"Created vault '{name}' at {root}")
     return load_vault(root, recent_vaults_path=recent_vaults_path)
 
 
@@ -116,6 +119,7 @@ def load_vault(vault_dir: Path | str, *, recent_vaults_path: Path | None = None)
     )
 
     _add_to_recent(root, recent_vaults_path or default_recent_vaults_path())
+    logger.info(f"Opened vault '{info.name}' at {root}")
     return info
 
 

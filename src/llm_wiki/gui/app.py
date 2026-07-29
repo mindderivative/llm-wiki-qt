@@ -10,7 +10,6 @@ import contextlib
 import sys
 
 import flet as ft
-from loguru import logger
 
 from llm_wiki.graph import get_graph_data
 from llm_wiki.gui import theme
@@ -321,6 +320,9 @@ class Shell:
         self.page.update()
 
     def _on_item_errored(self, title: str, error: str) -> None:
+        # No logger.error() here: compile_queued_item() already logs the
+        # failure with more context (which stage, the real exception) --
+        # duplicating it at this layer would just double the log line.
         self._batch_done += 1
         self.status_file.value = title
         self.status_stage.value = "Error"
@@ -328,15 +330,17 @@ class Shell:
         self._update_progress()
         self.items_panel.refresh()
         self.page.update()
-        logger.error(f"{title}: {error}")
 
     def _on_run_finished(self) -> None:
-        self.status_file.value = "—"
-        self.status_stage.value = "Idle"
-        self.status_stage.color = theme.TEXT_SECONDARY
-        self.progress_bar.value = 0
-        self.progress_label.value = "0%"
-        self.page.update()
+        """Deliberately leaves the status bar showing the last item's result
+        rather than resetting to Idle/0% -- `on_item_completed`'s
+        `page.update()` and this callback's used to fire back-to-back on the
+        same event-loop thread with no yield between them (`_worker()`
+        schedules both `run_task()` calls immediately in sequence), so the
+        completed state was overwritten before the client ever rendered a
+        frame with it. The next run's `on_run_started` resets the progress
+        bar to 0% when there's actually new work to show progress on.
+        """
 
     def _update_progress(self) -> None:
         fraction = self._batch_done / self._batch_total if self._batch_total else 0

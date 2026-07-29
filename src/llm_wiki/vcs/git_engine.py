@@ -8,6 +8,7 @@ happen here by construction.
 from pathlib import Path
 
 import pygit2
+from loguru import logger
 from pygit2.enums import FileStatus, MergeAnalysis, ResetMode
 
 from llm_wiki.models import GitStatus
@@ -31,6 +32,7 @@ def init(repo_path: Path | str) -> pygit2.Repository:
     path = Path(repo_path)
     path.mkdir(parents=True, exist_ok=True)
     pygit2.init_repository(str(path))
+    logger.info(f"Initialized git repository at {path}")
     return _open(path)
 
 
@@ -53,6 +55,7 @@ def stage_all(repo_path: Path | str) -> None:
     repo = _open(repo_path)
     repo.index.add_all()
     repo.index.write()
+    logger.info(f"Staged all changes in {repo_path}")
 
 
 def commit(
@@ -68,6 +71,7 @@ def commit(
     tree = repo.index.write_tree()
     parents = [] if repo.head_is_unborn else [repo.head.target]
     oid = repo.create_commit("HEAD", signature, signature, message, tree, parents)
+    logger.info(f"Committed {str(oid)[:8]}: {message}")
     return str(oid)
 
 
@@ -112,6 +116,7 @@ def push(
     branch_name = branch or _current_branch_name(repo)
     refspec = f"refs/heads/{branch_name}:refs/heads/{branch_name}"
     repo.remotes[remote_name].push([refspec], callbacks=callbacks)
+    logger.info(f"Pushed {branch_name} to {remote_name}")
 
 
 def pull(
@@ -136,10 +141,13 @@ def pull(
     merge_result, _ = repo.merge_analysis(remote_commit_id)
 
     if merge_result & MergeAnalysis.UP_TO_DATE:
+        logger.info(f"Pulled {remote_name}/{branch_name}: already up to date")
         return
 
     if merge_result & MergeAnalysis.FASTFORWARD:
         repo.reset(remote_commit_id, ResetMode.HARD)
+        logger.info(f"Pulled {remote_name}/{branch_name}: fast-forwarded")
         return
 
     repo.merge(remote_commit_id)
+    logger.info(f"Pulled {remote_name}/{branch_name}: merged, resolve any conflicts")
