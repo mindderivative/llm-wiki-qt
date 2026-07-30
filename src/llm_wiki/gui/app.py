@@ -15,6 +15,7 @@ from llm_wiki.graph import get_graph_data
 from llm_wiki.gui import theme
 from llm_wiki.gui.app_controller import AppController
 from llm_wiki.gui.chat_panel import ChatPanel
+from llm_wiki.gui.dashboard_panel import DashboardPanel
 from llm_wiki.gui.dialogs import (
     build_new_vault_dialog,
     build_open_vault_dialog,
@@ -82,8 +83,13 @@ class Shell:
         self.left_dock = DockArea([("Items", self.items_panel), ("Git", self.git_panel)])
         self.health_panel = HealthPanel()
         self.chat_panel = ChatPanel(page)
+        self.dashboard_panel = DashboardPanel()
         self.right_dock = DockArea(
-            [("Health", self.health_panel), ("AI Chat", self.chat_panel)],
+            [
+                ("Health", self.health_panel),
+                ("AI Chat", self.chat_panel),
+                ("Dashboard", self.dashboard_panel),
+            ],
             selected=1,
         )
         self.log_panel = LogPanel()
@@ -239,6 +245,7 @@ class Shell:
         if self.controller.conn is not None:
             self.graph.set_graph(get_graph_data(self.controller.conn))
             self.health_panel.set_connection(self.controller.conn)
+            self.dashboard_panel.set_connection(self.controller.conn)
             self.items_panel.set_connection(self.controller.conn)
         self.git_panel.set_vault_path(self.controller.vault_path)
 
@@ -327,6 +334,7 @@ class Shell:
             return
         self.graph.set_graph(get_graph_data(self.controller.conn))
         self.health_panel.set_connection(self.controller.conn)
+        self.dashboard_panel.set_connection(self.controller.conn)
         self.items_panel.refresh()
         self.page.update()
 
@@ -377,6 +385,7 @@ class Shell:
         self._update_progress()
         self.items_panel.refresh()
         self.health_panel.refresh()
+        self.dashboard_panel.refresh()
         # compile_queued_item() already ran sync_links() for this item
         # (Phase 18), so the DB reflects the new node/edges immediately --
         # without this, the canvas only picked them up on the next vault

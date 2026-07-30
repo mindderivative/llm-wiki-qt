@@ -25,6 +25,7 @@ import pytest
 from llm_wiki.gui import app as app_module
 from llm_wiki.gui import graph_canvas, theme
 from llm_wiki.gui.app_controller import AppController
+from llm_wiki.gui.dashboard_panel import DashboardPanel
 from llm_wiki.gui.dialogs import (
     build_new_vault_dialog,
     build_open_vault_dialog,
@@ -933,6 +934,55 @@ def test_health_panel_counts_broken_links_and_drops_the_score(vault_root: Path) 
     assert panel.counts[LintFindingKind.BROKEN_LINK] == 1
     assert panel.score < 100
     # The chart scales to the real finding count.
+    assert panel.build_chart().max_y >= 1
+
+
+# --- Dashboard panel (flet-charts) --------------------------------------
+
+
+def test_dashboard_panel_defaults_to_all_zero_stats_with_no_connection() -> None:
+    panel = DashboardPanel()
+
+    assert panel.stats.concepts == 0
+    assert panel.stats.total_ingested == 0
+    assert panel.stats.failures == 0
+
+
+def test_dashboard_panel_chart_has_a_bar_per_note_type() -> None:
+    chart = DashboardPanel().build_chart()
+
+    assert [label.label.value for label in chart.bottom_axis.labels] == [
+        "Concepts",
+        "Entities",
+        "Sources",
+        "Synthesis",
+    ]
+    assert [group.rods[0].to_y for group in chart.groups] == [0, 0, 0, 0]
+
+
+def test_dashboard_panel_chart_max_y_never_collapses_to_zero() -> None:
+    """An empty vault still needs a drawable axis."""
+    assert DashboardPanel().build_chart().max_y == 1
+
+
+def test_dashboard_panel_reflects_real_vault_stats(vault_root: Path) -> None:
+    conn = connect(vault_root / ".llm-wiki" / "db.sqlite3")
+    conn.execute(
+        "INSERT INTO notes (path, title, slug, type, tags, sources, content_hash, updated_at) "
+        "VALUES ('wiki/a.md', 'A', 'a', 'concept', '[]', '[]', 'hash', '2026-01-01T00:00:00Z')"
+    )
+    conn.execute(
+        "INSERT INTO queue (title, raw_path, status, created_at, updated_at) "
+        "VALUES ('doc', 'raw/doc.txt', 'completed', "
+        "'2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"
+    )
+    conn.commit()
+
+    panel = DashboardPanel()
+    panel.set_connection(conn)
+
+    assert panel.stats.concepts == 1
+    assert panel.stats.total_ingested == 1
     assert panel.build_chart().max_y >= 1
 
 
