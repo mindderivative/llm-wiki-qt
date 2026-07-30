@@ -193,6 +193,22 @@ class GraphCanvas(ft.Container):
             pos_seed = {_GRAVITY_WELL_SLUG: (0.0, 0.0)}
             fixed = [_GRAVITY_WELL_SLUG]
         pos = nx.spring_layout(self._graph, k=k, iterations=100, seed=42, pos=pos_seed, fixed=fixed)
+        if fixed:
+            # spring_layout auto-rescales its output to a ~1.0 bounding
+            # radius by default (its own scale=1), but silently skips that
+            # rescale whenever fixed= is given -- confirmed directly by
+            # reading its source. Left alone, the anchored layout's raw
+            # bounding radius comes out ~2x the unanchored one (measured on
+            # this file's own benchmark graph), which is what "only half
+            # the graph fits on screen at the same zoom" turned out to be.
+            # Restoring the same ~1.0-bounding-radius invariant the
+            # unanchored path already gets for free -- not a tuning
+            # constant, an exact rescale to match spring_layout's own
+            # normal behavior.
+            radii = (math.hypot(float(xy[0]), float(xy[1])) for xy in pos.values())
+            max_r = max(radii, default=0.0)
+            if max_r > 0:
+                pos = {node: (xy[0] / max_r, xy[1] / max_r) for node, xy in pos.items()}
         return {str(node): self._to_canvas(float(xy[0]), float(xy[1])) for node, xy in pos.items()}
 
     def _compute_layout(self) -> None:
@@ -527,12 +543,27 @@ class GraphCanvas(ft.Container):
         dynamic = self._dynamic_slugs()
         edge_paint = ft.Paint(color=theme.GRAPH_EDGE, stroke_width=1.8)
         shapes: list[cv.Shape] = []
+        static_endpoints: set[str] = set()
         for u, v in self._graph.edges():
             if u in dynamic or v in dynamic:
                 shape = self._edge_shape(u, v, edge_paint)
                 if shape is not None:
                     shapes.append(shape)
+                if u not in dynamic:
+                    static_endpoints.add(u)
+                if v not in dynamic:
+                    static_endpoints.add(v)
         for slug in dynamic:
+            pos = self._positions.get(slug)
+            if pos is not None:
+                shapes.append(self._node_circle(slug, *pos))
+        # The static canvas sits *underneath* this one, so a cross-boundary
+        # edge (one dynamic endpoint, one static) would otherwise draw over
+        # its static endpoint's circle regardless of within-canvas
+        # ordering. A redundant circle here, on top of the edge, exactly
+        # overlaps the real one below -- no visible duplicate, correct
+        # z-order. The static canvas itself is never touched by this.
+        for slug in static_endpoints:
             pos = self._positions.get(slug)
             if pos is not None:
                 shapes.append(self._node_circle(slug, *pos))

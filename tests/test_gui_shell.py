@@ -414,6 +414,46 @@ def test_layout_is_unaffected_when_there_is_no_index_node() -> None:
     assert set(canvas.node_positions) == {"alpha", "beta", "gamma"}
 
 
+def _bounding_radius_in_data_space(canvas: GraphCanvas) -> float:
+    """Reverses `_to_canvas()`'s formula to recover the layout's bounding
+    radius in spring_layout's own units, pre-canvas-mapping.
+    """
+    scale = canvas._layout_scale()
+    half_w = (canvas._width - graph_canvas._LAYOUT_MARGIN * 2) / 2.0 * scale
+    half_h = (canvas._height - graph_canvas._LAYOUT_MARGIN * 2) / 2.0 * scale
+
+    def to_data_space(x: float, y: float) -> tuple[float, float]:
+        return ((x - canvas._width / 2.0) / half_w, (y - canvas._height / 2.0) / half_h)
+
+    return max(math.hypot(*to_data_space(x, y)) for x, y in canvas.node_positions.values())
+
+
+def test_anchored_layout_bounding_radius_matches_spring_layouts_own_default() -> None:
+    """The unanchored path already gets spring_layout's own scale=1
+    auto-rescale (bounding radius ~1.0) for free; fixed= silently skips
+    it -- this was the actual cause of "only half the graph fits on
+    screen at the same zoom" once index became anchored. Locked in
+    directly in data space here, not an indirect proxy metric.
+    """
+    canvas = GraphCanvas(_page_stub())
+    graph = nx.DiGraph()
+    for i in range(17):
+        graph.add_edge(f"note-{i}", "index")
+        graph.add_edge(f"note-{i}", f"source-{i % 3}")
+    canvas._graph = graph
+    canvas._compute_layout()
+
+    assert _bounding_radius_in_data_space(canvas) == pytest.approx(1.0, abs=0.01)
+
+
+def test_anchored_bounding_radius_is_correct_regardless_of_node_count() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = nx.DiGraph([("a", "index"), ("b", "index")])
+    canvas._compute_layout()
+
+    assert _bounding_radius_in_data_space(canvas) == pytest.approx(1.0, abs=0.01)
+
+
 def test_graph_canvas_zoom_is_clamped() -> None:
     canvas = GraphCanvas(_page_stub())
     for _ in range(50):
@@ -867,6 +907,33 @@ def test_dragging_partitions_shapes_between_static_and_dynamic_layers() -> None:
     dynamic_lines = [s for s in dynamic_shapes if isinstance(s, cv.Line)]
     assert len(static_lines) == 0
     assert len(dynamic_lines) == 1
+
+
+def test_dynamic_edge_to_a_static_endpoint_draws_a_shadow_circle_on_top() -> None:
+    """Regression: the static canvas renders *underneath* the dynamic one,
+    so a cross-boundary edge (dragging a leaf whose only edge goes to
+    `index`, excluded from the dynamic set by the gravity well -- the
+    common case) would otherwise draw over its static endpoint's circle,
+    regardless of within-canvas shape ordering.
+    """
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = nx.DiGraph([("leaf", "index")])
+    canvas._positions = {"leaf": (400.0, 300.0), "index": (400.0, 420.0)}
+
+    _pan_start_at(canvas, 400.0, 300.0)  # hits "leaf"
+    _pan_update_to(canvas, 500.0, 300.0, dx=100.0, dy=0.0)
+    canvas._simulation_tick()
+
+    assert canvas._dynamic_slugs() == {"leaf"}  # "index" excluded (gravity well)
+
+    dynamic_shapes = canvas._build_dynamic_shapes()
+    edge_index = next(i for i, s in enumerate(dynamic_shapes) if isinstance(s, cv.Line))
+    circle_indices = [i for i, s in enumerate(dynamic_shapes) if isinstance(s, cv.Circle)]
+
+    # The dragged node's own circle, plus a shadow copy of "index"'s --
+    # both must come after (draw on top of) the edge.
+    assert len(circle_indices) == 2
+    assert all(i > edge_index for i in circle_indices)
 
 
 def test_simulation_tick_reports_changed_only_on_set_transitions() -> None:
