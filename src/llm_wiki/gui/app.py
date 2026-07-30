@@ -371,6 +371,12 @@ class Shell:
         self._update_progress()
         self.items_panel.refresh()
         self.health_panel.refresh()
+        # compile_queued_item() already ran sync_links() for this item
+        # (Phase 18), so the DB reflects the new node/edges immediately --
+        # without this, the canvas only picked them up on the next vault
+        # open (_on_vault_changed()) or manual Reindex Vault.
+        if self.controller.conn is not None:
+            self.graph.set_graph(get_graph_data(self.controller.conn))
         self.page.update()
 
     def _on_item_errored(self, title: str, error: str) -> None:

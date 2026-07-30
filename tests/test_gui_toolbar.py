@@ -376,5 +376,11 @@ def test_shell_wires_vault_open_through_a_real_pipeline_run(
             connect(vault_root / ".llm-wiki" / "db.sqlite3"), item.id
         ).status is QueueStatus.COMPLETED
         assert shell.items_panel.raw_items  # refreshed post-completion
+
+        # Regression: the graph canvas used to only pick up new nodes/edges
+        # on the next vault open or a manual Reindex Vault -- _on_item_completed
+        # now re-fetches the graph itself, so this shouldn't need a restart.
+        _wait_until(lambda: shell.graph.node_positions)
+        assert shell.graph.node_positions
     finally:
         shell.raw_watcher.stop()  # opening the vault started it (auto_watch_raw defaults on)
