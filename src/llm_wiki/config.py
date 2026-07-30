@@ -82,7 +82,26 @@ class GraphViewConfig(BaseModel):
     filter_search: str = ""
     filter_date_from: str | None = None
     filter_date_to: str | None = None
-    filter_degrees: int | None = None
+    # Post-24 fix -- always a real 1-5 value now; "off" is represented by
+    # filter_degrees_enabled=False, not a None/0 sentinel, since the
+    # slider itself is always interactive (see graph_canvas.py).
+    filter_degrees: int = 1
+
+    # Post-24 fix -- one enable switch per filter dimension, plus a master.
+    # All default True, matching the pre-Post-24 always-on behavior --
+    # turning a filter off never clears its configured value.
+    filters_enabled: bool = True
+    filter_types_enabled: bool = True
+    filter_tags_enabled: bool = True
+    filter_search_enabled: bool = True
+    filter_date_enabled: bool = True
+    # Defaults False, unlike the other four: those start at no-op values
+    # (all types checked, no tags/search/dates set) so "enabled" is
+    # harmless before you configure anything. Degrees has no such no-op
+    # state -- it activates the instant *any* node is selected, which is
+    # a normal browsing action, not a deliberate filter choice, so it
+    # must start off.
+    filter_degrees_enabled: bool = False
 
 
 class AppSettings(BaseSettings):

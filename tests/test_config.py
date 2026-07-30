@@ -157,7 +157,23 @@ def test_graph_view_filters_default_to_all_types_and_nothing_else() -> None:
     assert settings.graph_view.filter_search == ""
     assert settings.graph_view.filter_date_from is None
     assert settings.graph_view.filter_date_to is None
-    assert settings.graph_view.filter_degrees is None
+    assert settings.graph_view.filter_degrees == 1
+
+
+def test_graph_view_filter_enable_switches_default_true_except_degrees() -> None:
+    """Degrees is the one exception: it has no no-op state (it activates
+    the instant any node is selected, a normal browsing action), so it
+    must default off while the other four -- which start at genuinely
+    inert values -- default on.
+    """
+    settings = AppSettings.load(None)
+    gv = settings.graph_view
+    assert gv.filters_enabled is True
+    assert gv.filter_types_enabled is True
+    assert gv.filter_tags_enabled is True
+    assert gv.filter_search_enabled is True
+    assert gv.filter_date_enabled is True
+    assert gv.filter_degrees_enabled is False
 
 
 def test_graph_view_filters_round_trip_through_save(tmp_path: Path) -> None:
@@ -169,6 +185,8 @@ def test_graph_view_filters_round_trip_through_save(tmp_path: Path) -> None:
     settings.graph_view.filter_date_from = "2026-01-01"
     settings.graph_view.filter_date_to = "2026-12-31"
     settings.graph_view.filter_degrees = 2
+    settings.graph_view.filters_enabled = False
+    settings.graph_view.filter_degrees_enabled = True
 
     settings.save(config_path)
     reloaded = AppSettings.load(config_path)
@@ -179,3 +197,5 @@ def test_graph_view_filters_round_trip_through_save(tmp_path: Path) -> None:
     assert reloaded.graph_view.filter_date_from == "2026-01-01"
     assert reloaded.graph_view.filter_date_to == "2026-12-31"
     assert reloaded.graph_view.filter_degrees == 2
+    assert reloaded.graph_view.filters_enabled is False
+    assert reloaded.graph_view.filter_degrees_enabled is True

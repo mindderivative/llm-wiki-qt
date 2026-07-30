@@ -696,6 +696,7 @@ def test_date_filter_narrows_to_the_range() -> None:
 def test_degrees_filter_only_applies_with_a_selection() -> None:
     canvas = _filters_canvas()
     canvas._filter_degrees = 1
+    canvas._filter_degrees_enabled = True
     # No selection -- the filter has no effect yet, per its own spec.
     assert canvas._passes_filters("note-c") is True
 
@@ -707,6 +708,22 @@ def test_degrees_filter_only_applies_with_a_selection() -> None:
     assert canvas._passes_filters("note-b") is True
     assert canvas._passes_filters("index") is True  # exempt anyway
     assert canvas._passes_filters("note-c") is False
+
+
+def test_degrees_filter_is_off_by_default_even_once_a_node_is_selected() -> None:
+    """Regression: selecting a node is a normal browsing action, not a
+    deliberate filter choice -- unlike the other four dimensions (which
+    default enabled=True but start at no-op values), degrees has no no-op
+    state, so it must default *disabled* or merely clicking a node would
+    silently start hiding everything more than a few hops away.
+    """
+    canvas = _filters_canvas()
+    assert canvas._filter_degrees_enabled is False
+
+    canvas._selected = "note-a"
+    canvas._update_degrees_from_selected()
+
+    assert canvas._passes_filters("note-c") is True
 
 
 def test_filtered_out_nodes_are_excluded_from_shapes_and_hit_testing() -> None:
@@ -739,6 +756,71 @@ def test_filter_change_deselects_a_node_that_no_longer_passes() -> None:
     assert canvas._info_overlay.visible is False
 
 
+# --- Redraw/rebuild decoupling (Post-24 fix, IMPORTANT) -------------------
+
+
+def test_search_field_change_does_not_rebuild_the_settings_panel() -> None:
+    """Regression: rebuilding the whole panel on every keystroke replaced
+    the TextField with a fresh instance each time, resetting its focus on
+    the client -- the same class of bug this project already root-caused
+    once (Post-16d, the chat input field). The graph must still redraw
+    (that's the whole point of a filter changing); only the panel's own
+    control tree must not be touched.
+    """
+    canvas = _filters_canvas()
+    canvas._redraw_all()
+    panel_content_before = canvas._settings_panel.content
+    static_shapes_before = canvas._static_canvas.shapes
+
+    canvas._on_filter_search_changed("al")
+
+    assert canvas._settings_panel.content is panel_content_before
+    assert canvas._filter_search == "al"
+    assert canvas._static_canvas.shapes is not static_shapes_before  # graph did redraw
+
+
+def test_degrees_slider_change_does_not_rebuild_the_settings_panel() -> None:
+    canvas = _filters_canvas()
+    canvas._redraw_all()
+    panel_content_before = canvas._settings_panel.content
+
+    canvas._on_filter_degrees_changed(3)
+
+    assert canvas._settings_panel.content is panel_content_before
+    assert canvas._filter_degrees == 3
+
+
+# --- Master and per-dimension enable switches (Post-24 fix) ---------------
+
+
+def test_master_switch_off_shows_everything_regardless_of_individual_filters() -> None:
+    canvas = _filters_canvas()
+    canvas._filter_types = {"concept"}  # would normally exclude note-b/note-c
+    canvas._filter_tags = {"nonexistent"}
+
+    canvas._on_filter_master_toggled(False)
+
+    assert canvas._passes_filters("note-a") is True
+    assert canvas._passes_filters("note-b") is True
+    assert canvas._passes_filters("note-c") is True
+    # The configured values themselves are untouched, just not applied.
+    assert canvas._filter_types == {"concept"}
+
+
+def test_disabling_a_dimension_keeps_its_configured_value() -> None:
+    canvas = _filters_canvas()
+    canvas._filter_types = {"concept"}  # would normally exclude note-b
+
+    canvas._on_filter_types_enabled_toggled(False)
+
+    assert canvas._passes_filters("note-b") is True  # no longer applied
+    assert canvas._filter_types == {"concept"}  # but still configured
+
+    canvas._on_filter_types_enabled_toggled(True)
+
+    assert canvas._passes_filters("note-b") is False  # applies again, unchanged
+
+
 def test_filters_reset_restores_defaults_and_fires_the_callback() -> None:
     seen: list[GraphFilterState] = []
     canvas = GraphCanvas(_page_stub(), on_filters_changed=seen.append)
@@ -748,6 +830,9 @@ def test_filters_reset_restores_defaults_and_fires_the_callback() -> None:
     canvas._filter_search = "x"
     canvas._filter_date_from = "2026-01-01"
     canvas._filter_degrees = 2
+    canvas._filters_enabled = False
+    canvas._filter_types_enabled = False
+    canvas._filter_degrees_enabled = True
 
     canvas._on_filters_reset()
 
@@ -755,7 +840,10 @@ def test_filters_reset_restores_defaults_and_fires_the_callback() -> None:
     assert canvas._filter_tags == set()
     assert canvas._filter_search == ""
     assert canvas._filter_date_from is None
-    assert canvas._filter_degrees is None
+    assert canvas._filter_degrees == 1
+    assert canvas._filters_enabled is True
+    assert canvas._filter_types_enabled is True
+    assert canvas._filter_degrees_enabled is False  # the one exception -- see __init__
     assert seen[-1] == canvas._current_filter_state()
 
 
@@ -770,13 +858,21 @@ def test_set_filters_syncs_without_firing_the_callback() -> None:
         search="alpha",
         date_from="2026-01-01",
         date_to=None,
-        degrees=None,
+        degrees=3,
+        filters_enabled=True,
+        types_enabled=True,
+        tags_enabled=False,
+        search_enabled=True,
+        date_enabled=True,
+        degrees_enabled=True,
     )
     canvas.set_filters(state)
 
     assert canvas._filter_types == {"concept"}
     assert canvas._filter_tags == {"core"}
     assert canvas._filter_search == "alpha"
+    assert canvas._filter_tags_enabled is False
+    assert canvas._filter_degrees_enabled is True
     assert seen == []  # syncing from settings is not a user change
 
 

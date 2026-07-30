@@ -270,6 +270,12 @@ class Shell:
                 date_from=gv.filter_date_from,
                 date_to=gv.filter_date_to,
                 degrees=gv.filter_degrees,
+                filters_enabled=gv.filters_enabled,
+                types_enabled=gv.filter_types_enabled,
+                tags_enabled=gv.filter_tags_enabled,
+                search_enabled=gv.filter_search_enabled,
+                date_enabled=gv.filter_date_enabled,
+                degrees_enabled=gv.filter_degrees_enabled,
             )
         )
         self._sync_raw_watcher()
@@ -305,6 +311,12 @@ class Shell:
         gv.filter_date_from = state.date_from
         gv.filter_date_to = state.date_to
         gv.filter_degrees = state.degrees
+        gv.filters_enabled = state.filters_enabled
+        gv.filter_types_enabled = state.types_enabled
+        gv.filter_tags_enabled = state.tags_enabled
+        gv.filter_search_enabled = state.search_enabled
+        gv.filter_date_enabled = state.date_enabled
+        gv.filter_degrees_enabled = state.degrees_enabled
         self.controller.save_settings()
 
     def _sync_raw_watcher(self) -> None:

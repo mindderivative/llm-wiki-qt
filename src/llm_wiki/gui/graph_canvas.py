@@ -85,7 +85,7 @@ _FUZZY_MATCH_THRESHOLD = 0.4
 class GraphFilterState(NamedTuple):
     """Bundles every Filters value in one payload -- `on_filters_changed`
     fires this whole; `set_filters()` accepts it whole -- rather than
-    five separate callbacks/setters for five independent fields.
+    eleven separate callbacks/setters for eleven independent fields.
     """
 
     types: frozenset[str]
@@ -93,7 +93,16 @@ class GraphFilterState(NamedTuple):
     search: str
     date_from: str | None
     date_to: str | None
-    degrees: int | None
+    # Post-24 fix -- always a real 1-5 value; "off" is degrees_enabled,
+    # not a None/0 sentinel (the slider is always interactive now).
+    degrees: int
+    # Post-24 fix -- one enable switch per dimension, plus a master.
+    filters_enabled: bool
+    types_enabled: bool
+    tags_enabled: bool
+    search_enabled: bool
+    date_enabled: bool
+    degrees_enabled: bool
 
 
 def _fuzzy_match(query: str, text: str) -> bool:
@@ -152,7 +161,21 @@ class GraphCanvas(ft.Container):
         self._filter_search = ""
         self._filter_date_from: str | None = None
         self._filter_date_to: str | None = None
-        self._filter_degrees: int | None = None
+        # Post-24 fix -- always a real 1-5 value; whether it's applied is
+        # controlled by self._filter_degrees_enabled, not this value.
+        self._filter_degrees = 1
+        # Post-24 fix -- one enable switch per dimension, plus a master.
+        # Four default True (matching the pre-Post-24 always-on behavior --
+        # each starts at a no-op value, so "enabled" is harmless). Degrees
+        # is the exception: it has no no-op state, activating the instant
+        # any node is selected -- a normal browsing action, not a
+        # deliberate filter choice -- so it must start off.
+        self._filters_enabled = True
+        self._filter_types_enabled = True
+        self._filter_tags_enabled = True
+        self._filter_search_enabled = True
+        self._filter_date_enabled = True
+        self._filter_degrees_enabled = False
         # Recomputed in _notify_selection() whenever self._selected changes
         # -- see _passes_filters() and _update_degrees_from_selected().
         self._degrees_from_selected: dict[str, int] = {}
@@ -545,23 +568,31 @@ class GraphCanvas(ft.Container):
         (no type/tags/title of its own), and hiding it would break the
         visual anchor everything else was just organized around (the
         gravity well, Post-22).
+
+        The master switch and each dimension's own switch (Post-24 fix)
+        only ever gate whether a dimension's *configured* value is
+        applied -- turning a filter off never clears it, so re-enabling
+        restores exactly what was set before.
         """
         if slug == _GRAVITY_WELL_SLUG:
+            return True
+        if not self._filters_enabled:
             return True
         if slug not in self._graph:
             return False
         data = self._graph.nodes[slug]
 
-        node_type = data.get("type")
-        if node_type is not None and node_type not in self._filter_types:
-            return False
+        if self._filter_types_enabled:
+            node_type = data.get("type")
+            if node_type is not None and node_type not in self._filter_types:
+                return False
 
-        if self._filter_tags:
+        if self._filter_tags_enabled and self._filter_tags:
             node_tags = set(data.get("tags") or [])
             if not node_tags & self._filter_tags:
                 return False
 
-        if self._filter_search:
+        if self._filter_search_enabled and self._filter_search:
             # Checked independently, not concatenated -- a combined
             # "title slug" string dilutes the similarity ratio for both,
             # weakening genuinely-fuzzy (non-substring) matches.
@@ -572,7 +603,7 @@ class GraphCanvas(ft.Container):
             ):
                 return False
 
-        if self._filter_date_from or self._filter_date_to:
+        if self._filter_date_enabled and (self._filter_date_from or self._filter_date_to):
             updated = data.get("updated_at")
             if not updated:
                 return False
@@ -582,7 +613,7 @@ class GraphCanvas(ft.Container):
                 return False
 
         if (
-            self._filter_degrees is not None
+            self._filter_degrees_enabled
             and self._selected is not None
             and slug != self._selected
         ):
@@ -777,12 +808,14 @@ class GraphCanvas(ft.Container):
 
     def _build_settings_panel(self) -> ft.Control:
         """Replaces the old always-on legend -- same slot/styling, now a
-        collapsible shell. The legend is today's only content; Filters and
-        Settings (later phases) will add more sections here.
+        collapsible shell. Fixed width (Post-24 fix): nothing inside --
+        the tag list in particular -- can stretch this across the graph
+        regardless of how much content it holds.
         """
         return ft.Container(
             left=14,
             top=12,
+            width=260,
             padding=ft.Padding(12, 9, 12, 9),
             bgcolor=theme.CHROME_BG,
             border=ft.Border.all(1, theme.BORDER),
@@ -819,7 +852,7 @@ class GraphCanvas(ft.Container):
                     # Phase 24 (Filters) made this section genuinely tall --
                     # capped height + scroll instead of growing to cover
                     # the graph.
-                    height=440,
+                    height=480,
                     content=ft.Column(
                         spacing=10,
                         scroll=ft.ScrollMode.AUTO,
@@ -853,7 +886,7 @@ class GraphCanvas(ft.Container):
             ],
         )
 
-    # --- Filters (Phase 24) --------------------------------------------------
+    # --- Filters (Phase 24, redesigned Post-24 fix) ---------------------------
 
     def _all_tags(self) -> list[str]:
         tags = {t for _, data in self._graph.nodes(data=True) for t in (data.get("tags") or [])}
@@ -872,95 +905,217 @@ class GraphCanvas(ft.Container):
             ),
         )
 
-    def _build_date_button(self, label: str, value: str | None, on_click) -> ft.Control:
+    def _build_date_button(
+        self, label: str, value: str | None, on_click, *, disabled: bool
+    ) -> ft.Control:
         return ft.Container(
             padding=ft.Padding(8, 5, 8, 5),
             bgcolor=theme.CARD_BG,
             border=ft.Border.all(1, theme.BORDER_STRONG),
             border_radius=6,
-            on_click=on_click,
+            on_click=None if disabled else on_click,
+            opacity=0.5 if disabled else 1.0,
             content=ft.Text(f"{label}: {value or 'Any'}", size=10, color=theme.TEXT_TOGGLE_OFF),
         )
 
-    def _build_filters_section(self) -> ft.Control:
+    def _build_filter_section_box(
+        self, title: str, enabled: bool, on_toggle, content: ft.Control
+    ) -> ft.Control:
+        """A bordered, labeled sub-section with its own enable switch --
+        one per filter dimension (Post-24 fix #3/#4: visually separated,
+        individually toggleable without losing its configured value).
+        """
+        return ft.Container(
+            padding=ft.Padding(8, 6, 8, 6),
+            bgcolor=theme.CARD_BG,
+            border=ft.Border.all(1, theme.BORDER),
+            border_radius=6,
+            content=ft.Column(
+                spacing=6,
+                controls=[
+                    ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        controls=[
+                            ft.Text(
+                                title, size=10.5, weight=ft.FontWeight.W_600, color=theme.TEXT
+                            ),
+                            ft.Switch(
+                                value=enabled,
+                                on_change=lambda e: on_toggle(e.control.value),
+                            ),
+                        ],
+                    ),
+                    content,
+                ],
+            ),
+        )
+
+    def _build_tags_popup(self) -> ft.Control:
+        """A PopupMenuButton (Post-24 fix #1) rather than an inline wrapping
+        row -- the tag list has no natural bound on length, and an inline
+        row had nothing to wrap *within*, which was the actual cause of the
+        panel stretching across the graph. The popup's own content is a
+        fixed-size scrollable box, so however many tags exist, the popup
+        itself never grows past it.
+        """
         tags = self._all_tags()
+        count = len(self._filter_tags)
+        trigger_label = f"Tags ({count})" if count else "Tags"
+        if tags:
+            popup_content: ft.Control = ft.Container(
+                width=220,
+                height=200,
+                padding=8,
+                content=ft.Column(
+                    scroll=ft.ScrollMode.AUTO,
+                    controls=[
+                        ft.Row(
+                            wrap=True,
+                            spacing=4,
+                            run_spacing=4,
+                            controls=[self._build_tag_chip(tag) for tag in tags],
+                        )
+                    ],
+                ),
+            )
+        else:
+            popup_content = ft.Container(
+                width=220,
+                padding=8,
+                content=ft.Text("No tags yet", size=10, color=theme.TEXT_MUTED),
+            )
+        return ft.PopupMenuButton(
+            disabled=not self._filter_tags_enabled,
+            content=ft.Container(
+                padding=ft.Padding(8, 5, 8, 5),
+                bgcolor=theme.CARD_BG,
+                border=ft.Border.all(1, theme.BORDER_STRONG),
+                border_radius=6,
+                content=ft.Text(trigger_label, size=10.5, color=theme.TEXT_TOGGLE_OFF),
+            ),
+            items=[ft.PopupMenuItem(content=popup_content)],
+        )
+
+    def _build_filters_section(self) -> ft.Control:
+        type_content = ft.Column(
+            spacing=2,
+            controls=[
+                ft.Row(
+                    spacing=4,
+                    controls=[
+                        ft.Checkbox(
+                            value=type_key in self._filter_types,
+                            fill_color=color,
+                            disabled=not self._filter_types_enabled,
+                            on_change=(
+                                lambda e, t=type_key: self._on_filter_type_changed(
+                                    t, e.control.value
+                                )
+                            ),
+                        ),
+                        ft.Text(label, size=10.5, color=theme.TEXT_TOGGLE_OFF),
+                    ],
+                )
+                for type_key, label, color in _FILTER_NOTE_TYPES
+            ],
+        )
+
+        search_content = ft.TextField(
+            value=self._filter_search,
+            hint_text="Search notes…",
+            height=34,
+            text_size=11,
+            disabled=not self._filter_search_enabled,
+            content_padding=ft.Padding(8, 4, 8, 4),
+            on_change=lambda e: self._on_filter_search_changed(e.control.value),
+        )
+
+        date_content = ft.Row(
+            spacing=6,
+            controls=[
+                self._build_date_button(
+                    "From",
+                    self._filter_date_from,
+                    lambda e: self._page.show_dialog(self._date_picker_from),
+                    disabled=not self._filter_date_enabled,
+                ),
+                self._build_date_button(
+                    "To",
+                    self._filter_date_to,
+                    lambda e: self._page.show_dialog(self._date_picker_to),
+                    disabled=not self._filter_date_enabled,
+                ),
+            ],
+        )
+
+        degrees_caption = (
+            "Applies once you select a node"
+            if self._selected is None
+            else f"Within {self._filter_degrees} hop(s) of the selection"
+        )
+        degrees_content = ft.Column(
+            spacing=2,
+            controls=[
+                ft.Text(degrees_caption, size=10, color=theme.TEXT_MUTED),
+                ft.Slider(
+                    min=1,
+                    max=5,
+                    divisions=4,
+                    value=self._filter_degrees,
+                    label="{value}",
+                    disabled=not self._filter_degrees_enabled,
+                    on_change=lambda e: self._on_filter_degrees_changed(int(e.control.value)),
+                ),
+            ],
+        )
+
         return ft.Column(
             spacing=8,
             controls=[
-                ft.Column(
-                    spacing=2,
-                    controls=[
-                        ft.Row(
-                            spacing=4,
-                            controls=[
-                                ft.Checkbox(
-                                    value=type_key in self._filter_types,
-                                    fill_color=color,
-                                    on_change=(
-                                        lambda e, t=type_key: self._on_filter_type_changed(
-                                            t, e.control.value
-                                        )
-                                    ),
-                                ),
-                                ft.Text(label, size=10.5, color=theme.TEXT_TOGGLE_OFF),
-                            ],
-                        )
-                        for type_key, label, color in _FILTER_NOTE_TYPES
-                    ],
-                ),
                 ft.Row(
-                    wrap=True,
-                    spacing=4,
-                    run_spacing=4,
-                    controls=[self._build_tag_chip(tag) for tag in tags],
-                )
-                if tags
-                else ft.Text("No tags yet", size=10, color=theme.TEXT_MUTED),
-                ft.TextField(
-                    value=self._filter_search,
-                    hint_text="Search notes…",
-                    height=34,
-                    text_size=11,
-                    content_padding=ft.Padding(8, 4, 8, 4),
-                    on_change=lambda e: self._on_filter_search_changed(e.control.value),
-                ),
-                ft.Row(
-                    spacing=6,
-                    controls=[
-                        self._build_date_button(
-                            "From",
-                            self._filter_date_from,
-                            lambda e: self._page.show_dialog(self._date_picker_from),
-                        ),
-                        self._build_date_button(
-                            "To",
-                            self._filter_date_to,
-                            lambda e: self._page.show_dialog(self._date_picker_to),
-                        ),
-                    ],
-                ),
-                ft.Column(
-                    spacing=2,
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     controls=[
                         ft.Text(
-                            "Degrees from selected"
-                            if self._selected is not None
-                            else "Degrees from selected (select a node)",
-                            size=10,
-                            color=theme.TEXT_MUTED,
+                            "Enable Filters",
+                            size=10.5,
+                            weight=ft.FontWeight.W_600,
+                            color=theme.TEXT,
                         ),
-                        ft.Slider(
-                            min=0,
-                            max=5,
-                            divisions=5,
-                            value=self._filter_degrees or 0,
-                            label="{value}",
-                            disabled=self._selected is None,
-                            on_change=lambda e: self._on_filter_degrees_changed(
-                                int(e.control.value)
-                            ),
+                        ft.Switch(
+                            value=self._filters_enabled,
+                            on_change=lambda e: self._on_filter_master_toggled(e.control.value),
                         ),
                     ],
+                ),
+                self._build_filter_section_box(
+                    "Type",
+                    self._filter_types_enabled,
+                    self._on_filter_types_enabled_toggled,
+                    type_content,
+                ),
+                self._build_filter_section_box(
+                    "Tags",
+                    self._filter_tags_enabled,
+                    self._on_filter_tags_enabled_toggled,
+                    self._build_tags_popup(),
+                ),
+                self._build_filter_section_box(
+                    "Search",
+                    self._filter_search_enabled,
+                    self._on_filter_search_enabled_toggled,
+                    search_content,
+                ),
+                self._build_filter_section_box(
+                    "Date",
+                    self._filter_date_enabled,
+                    self._on_filter_date_enabled_toggled,
+                    date_content,
+                ),
+                self._build_filter_section_box(
+                    "Degrees from Selected",
+                    self._filter_degrees_enabled,
+                    self._on_filter_degrees_enabled_toggled,
+                    degrees_content,
                 ),
                 ft.Container(
                     padding=ft.Padding(9, 5, 9, 5),
@@ -1005,20 +1160,37 @@ class GraphCanvas(ft.Container):
             date_from=self._filter_date_from,
             date_to=self._filter_date_to,
             degrees=self._filter_degrees,
+            filters_enabled=self._filters_enabled,
+            types_enabled=self._filter_types_enabled,
+            tags_enabled=self._filter_tags_enabled,
+            search_enabled=self._filter_search_enabled,
+            date_enabled=self._filter_date_enabled,
+            degrees_enabled=self._filter_degrees_enabled,
         )
 
-    def _apply_filter_change(self) -> None:
+    def _apply_filter_change(self, rebuild_panel: bool = True) -> None:
         """Common tail for every filter control's own handler: clears
-        selection if it's no longer visible under the new filters, rebuilds
-        the panel (tag-chip highlighting, checkbox states, ...), redraws
+        selection if it's no longer visible under the new filters, redraws
         the graph, and -- only here, not from `set_filters()` -- fires
         `on_filters_changed` so the caller can persist it.
+
+        `rebuild_panel` defaults `True` for discrete, one-shot interactions
+        (checkbox/chip/date-pick/switch/reset). The two *continuous*
+        interactions -- typing in Search, dragging the degrees Slider --
+        pass `False`: native Flet controls already reflect their own
+        live-edited state client-side, so rebuilding the panel's control
+        tree on every keystroke/drag-tick would push a redundant value
+        back to the client and reset its focus/gesture state (confirmed:
+        the same bug this project already root-caused once, Post-16d's
+        chat input field). The graph itself always redraws either way --
+        that's the whole point of a filter changing.
         """
         if self._selected is not None and not self._passes_filters(self._selected):
             self._selected = None
             self._update_info_overlay()
             self._degrees_from_selected = {}
-        self._rebuild_settings_panel()
+        if rebuild_panel:
+            self._rebuild_settings_panel()
         self._redraw_all()
         if self.on_filters_changed is not None:
             self.on_filters_changed(self._current_filter_state())
@@ -1039,7 +1211,7 @@ class GraphCanvas(ft.Container):
 
     def _on_filter_search_changed(self, value: str) -> None:
         self._filter_search = value
-        self._apply_filter_change()
+        self._apply_filter_change(rebuild_panel=False)
 
     @staticmethod
     def _to_date_string(value) -> str | None:
@@ -1062,7 +1234,31 @@ class GraphCanvas(ft.Container):
         self._apply_filter_change()
 
     def _on_filter_degrees_changed(self, value: int) -> None:
-        self._filter_degrees = value if value > 0 else None
+        self._filter_degrees = value
+        self._apply_filter_change(rebuild_panel=False)
+
+    def _on_filter_master_toggled(self, enabled: bool) -> None:
+        self._filters_enabled = enabled
+        self._apply_filter_change()
+
+    def _on_filter_types_enabled_toggled(self, enabled: bool) -> None:
+        self._filter_types_enabled = enabled
+        self._apply_filter_change()
+
+    def _on_filter_tags_enabled_toggled(self, enabled: bool) -> None:
+        self._filter_tags_enabled = enabled
+        self._apply_filter_change()
+
+    def _on_filter_search_enabled_toggled(self, enabled: bool) -> None:
+        self._filter_search_enabled = enabled
+        self._apply_filter_change()
+
+    def _on_filter_date_enabled_toggled(self, enabled: bool) -> None:
+        self._filter_date_enabled = enabled
+        self._apply_filter_change()
+
+    def _on_filter_degrees_enabled_toggled(self, enabled: bool) -> None:
+        self._filter_degrees_enabled = enabled
         self._apply_filter_change()
 
     def _on_filters_reset(self, e=None) -> None:
@@ -1071,7 +1267,13 @@ class GraphCanvas(ft.Container):
         self._filter_search = ""
         self._filter_date_from = None
         self._filter_date_to = None
-        self._filter_degrees = None
+        self._filter_degrees = 1
+        self._filters_enabled = True
+        self._filter_types_enabled = True
+        self._filter_tags_enabled = True
+        self._filter_search_enabled = True
+        self._filter_date_enabled = True
+        self._filter_degrees_enabled = False  # see __init__'s comment on why
         self._apply_filter_change()
 
     def set_filters(self, state: GraphFilterState) -> None:
@@ -1087,6 +1289,12 @@ class GraphCanvas(ft.Container):
         self._filter_date_from = state.date_from
         self._filter_date_to = state.date_to
         self._filter_degrees = state.degrees
+        self._filters_enabled = state.filters_enabled
+        self._filter_types_enabled = state.types_enabled
+        self._filter_tags_enabled = state.tags_enabled
+        self._filter_search_enabled = state.search_enabled
+        self._filter_date_enabled = state.date_enabled
+        self._filter_degrees_enabled = state.degrees_enabled
         if self._selected is not None and not self._passes_filters(self._selected):
             self._selected = None
             self._update_info_overlay()
