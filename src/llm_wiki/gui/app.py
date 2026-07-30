@@ -23,7 +23,7 @@ from llm_wiki.gui.dialogs import (
 )
 from llm_wiki.gui.dock import DockArea
 from llm_wiki.gui.git_panel import GitPanel
-from llm_wiki.gui.graph_canvas import GraphCanvas
+from llm_wiki.gui.graph_canvas import GraphCanvas, GraphFilterState
 from llm_wiki.gui.health_panel import HealthPanel
 from llm_wiki.gui.items_panel import ItemsPanel
 from llm_wiki.gui.log_panel import LogPanel
@@ -70,7 +70,9 @@ class Shell:
         self.controller.subscribe(self._on_vault_changed)
 
         self.graph = GraphCanvas(
-            page, on_settings_panel_toggled=self._on_graph_settings_panel_toggled
+            page,
+            on_settings_panel_toggled=self._on_graph_settings_panel_toggled,
+            on_filters_changed=self._on_graph_filters_changed,
         )
         self.file_picker = ft.FilePicker()
         # FilePicker is a Service, not a visual Control -- it belongs on
@@ -259,6 +261,17 @@ class Shell:
         self.graph.set_settings_panel_expanded(
             self.controller.settings.graph_view.settings_panel_expanded
         )
+        gv = self.controller.settings.graph_view
+        self.graph.set_filters(
+            GraphFilterState(
+                types=frozenset(gv.filter_types),
+                tags=frozenset(gv.filter_tags),
+                search=gv.filter_search,
+                date_from=gv.filter_date_from,
+                date_to=gv.filter_date_to,
+                degrees=gv.filter_degrees,
+            )
+        )
         self._sync_raw_watcher()
 
         self.page.title = (
@@ -277,6 +290,21 @@ class Shell:
         if not self.controller.has_vault:
             return
         self.controller.settings.graph_view.settings_panel_expanded = expanded
+        self.controller.save_settings()
+
+    def _on_graph_filters_changed(self, state: GraphFilterState) -> None:
+        """Persists the graph canvas Filters (Phase 24) -- a no-op before
+        any vault is open, mirroring `_on_graph_settings_panel_toggled`.
+        """
+        if not self.controller.has_vault:
+            return
+        gv = self.controller.settings.graph_view
+        gv.filter_types = sorted(state.types)
+        gv.filter_tags = sorted(state.tags)
+        gv.filter_search = state.search
+        gv.filter_date_from = state.date_from
+        gv.filter_date_to = state.date_to
+        gv.filter_degrees = state.degrees
         self.controller.save_settings()
 
     def _sync_raw_watcher(self) -> None:

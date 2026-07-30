@@ -148,3 +148,34 @@ def test_graph_view_round_trips_through_save(tmp_path: Path) -> None:
     reloaded = AppSettings.load(config_path)
 
     assert reloaded.graph_view.settings_panel_expanded is False
+
+
+def test_graph_view_filters_default_to_all_types_and_nothing_else() -> None:
+    settings = AppSettings.load(None)
+    assert settings.graph_view.filter_types == ["concept", "entity", "synthesis", "source"]
+    assert settings.graph_view.filter_tags == []
+    assert settings.graph_view.filter_search == ""
+    assert settings.graph_view.filter_date_from is None
+    assert settings.graph_view.filter_date_to is None
+    assert settings.graph_view.filter_degrees is None
+
+
+def test_graph_view_filters_round_trip_through_save(tmp_path: Path) -> None:
+    config_path = tmp_path / ".llm-wiki-config"
+    settings = AppSettings.load(None)
+    settings.graph_view.filter_types = ["concept"]
+    settings.graph_view.filter_tags = ["core", "physics"]
+    settings.graph_view.filter_search = "alpha"
+    settings.graph_view.filter_date_from = "2026-01-01"
+    settings.graph_view.filter_date_to = "2026-12-31"
+    settings.graph_view.filter_degrees = 2
+
+    settings.save(config_path)
+    reloaded = AppSettings.load(config_path)
+
+    assert reloaded.graph_view.filter_types == ["concept"]
+    assert reloaded.graph_view.filter_tags == ["core", "physics"]
+    assert reloaded.graph_view.filter_search == "alpha"
+    assert reloaded.graph_view.filter_date_from == "2026-01-01"
+    assert reloaded.graph_view.filter_date_to == "2026-12-31"
+    assert reloaded.graph_view.filter_degrees == 2

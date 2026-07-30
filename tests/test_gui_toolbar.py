@@ -22,6 +22,7 @@ import pytest
 from llm_wiki.config import AppSettings
 from llm_wiki.gui.app import Shell
 from llm_wiki.gui.app_controller import AppController
+from llm_wiki.gui.graph_canvas import GraphFilterState
 from llm_wiki.gui.pipeline_adapter import PipelineAdapter
 from llm_wiki.gui.toolbar import Toolbar
 from llm_wiki.ingest import enqueue_file, get_queue_item
@@ -336,6 +337,58 @@ def test_graph_settings_panel_toggle_persists_when_a_vault_is_open(page, vault_r
         assert shell.controller.settings.graph_view.settings_panel_expanded is False
         reloaded = AppSettings.load(vault_root / ".llm-wiki-config")
         assert reloaded.graph_view.settings_panel_expanded is False
+    finally:
+        shell.raw_watcher.stop()  # opening the vault started it (auto_watch_raw defaults on)
+
+
+def test_graph_filters_changed_is_a_no_op_without_a_vault(page):
+    shell = Shell(page)
+    state = GraphFilterState(
+        types=frozenset({"concept"}),
+        tags=frozenset(),
+        search="",
+        date_from=None,
+        date_to=None,
+        degrees=None,
+    )
+
+    shell._on_graph_filters_changed(state)  # must not raise
+
+    assert shell.controller.settings.graph_view.filter_types == [
+        "concept",
+        "entity",
+        "synthesis",
+        "source",
+    ]
+
+
+def test_graph_filters_changed_persists_when_a_vault_is_open(page, vault_root: Path):
+    shell = Shell(page)
+    state = GraphFilterState(
+        types=frozenset({"concept", "entity"}),
+        tags=frozenset({"core", "physics"}),
+        search="alpha",
+        date_from="2026-01-01",
+        date_to="2026-12-31",
+        degrees=2,
+    )
+
+    try:
+        _on_loop(page, shell.controller.open_vault, vault_root)
+
+        shell._on_graph_filters_changed(state)
+
+        gv = shell.controller.settings.graph_view
+        assert gv.filter_types == ["concept", "entity"]
+        assert gv.filter_tags == ["core", "physics"]
+        assert gv.filter_search == "alpha"
+        assert gv.filter_date_from == "2026-01-01"
+        assert gv.filter_date_to == "2026-12-31"
+        assert gv.filter_degrees == 2
+
+        reloaded = AppSettings.load(vault_root / ".llm-wiki-config")
+        assert reloaded.graph_view.filter_types == ["concept", "entity"]
+        assert reloaded.graph_view.filter_degrees == 2
     finally:
         shell.raw_watcher.stop()  # opening the vault started it (auto_watch_raw defaults on)
 

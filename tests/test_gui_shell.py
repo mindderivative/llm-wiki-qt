@@ -34,7 +34,7 @@ from llm_wiki.gui.dialogs import (
     build_settings_dialog,
 )
 from llm_wiki.gui.dock import DockArea
-from llm_wiki.gui.graph_canvas import GraphCanvas
+from llm_wiki.gui.graph_canvas import GraphCanvas, GraphFilterState
 from llm_wiki.gui.health_panel import HealthPanel
 from llm_wiki.gui.menu import build_menu_bar
 from llm_wiki.gui.splitter import ResizeHandle
@@ -589,6 +589,205 @@ def test_set_settings_panel_expanded_is_a_no_op_for_the_same_value() -> None:
     canvas.set_settings_panel_expanded(True)  # already the default
 
     assert canvas._settings_panel.content is content_before
+
+
+# --- Filters (Phase 24) --------------------------------------------------
+
+
+def _filters_fixture_graph() -> nx.DiGraph:
+    """`index` carries no attributes at all -- matching how it's actually
+    created in the real graph (implicitly, via edges, never an explicit
+    `notes` row) -- so it also exercises the gravity-well filter exemption.
+    """
+    graph = nx.DiGraph()
+    graph.add_node("index")
+    graph.add_node(
+        "note-a",
+        title="Alpha",
+        type="concept",
+        tags=["core", "physics"],
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+    graph.add_node(
+        "note-b",
+        title="Beta",
+        type="entity",
+        tags=["physics"],
+        updated_at="2026-06-01T00:00:00+00:00",
+    )
+    graph.add_node(
+        "note-c",
+        title="Gamma",
+        type="source",
+        tags=[],
+        updated_at="2026-03-01T00:00:00+00:00",
+    )
+    graph.add_edge("note-a", "index")
+    graph.add_edge("note-b", "index")
+    graph.add_edge("note-c", "index")
+    graph.add_edge("note-a", "note-b")
+    return graph
+
+
+def _filters_canvas() -> GraphCanvas:
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = _filters_fixture_graph()
+    canvas._positions = {
+        "index": (0.0, 0.0),
+        "note-a": (10.0, 0.0),
+        "note-b": (20.0, 0.0),
+        "note-c": (30.0, 0.0),
+    }
+    return canvas
+
+
+def test_index_always_passes_filters_regardless_of_any_combination() -> None:
+    canvas = _filters_canvas()
+    canvas._filter_types = set()  # would exclude every real note
+    canvas._filter_tags = {"nonexistent"}
+    canvas._filter_search = "nonexistent"
+    canvas._filter_date_from = "2099-01-01"
+
+    assert canvas._passes_filters("index") is True
+
+
+def test_type_filter_excludes_unchecked_types() -> None:
+    canvas = _filters_canvas()
+    canvas._filter_types = {"concept", "source"}
+
+    assert canvas._passes_filters("note-a") is True  # concept
+    assert canvas._passes_filters("note-b") is False  # entity, unchecked
+    assert canvas._passes_filters("note-c") is True  # source
+
+
+def test_tag_filter_matches_any_selected_tag() -> None:
+    canvas = _filters_canvas()
+    canvas._filter_tags = {"core"}
+    assert canvas._passes_filters("note-a") is True  # has "core"
+    assert canvas._passes_filters("note-b") is False  # only "physics"
+
+    canvas._filter_tags = {"physics"}
+    assert canvas._passes_filters("note-a") is True  # has "physics" too
+    assert canvas._passes_filters("note-b") is True
+
+
+def test_search_filter_matches_substring_and_genuine_fuzziness() -> None:
+    canvas = _filters_canvas()
+
+    canvas._filter_search = "alph"  # exact substring of "Alpha"
+    assert canvas._passes_filters("note-a") is True
+    assert canvas._passes_filters("note-b") is False
+
+    canvas._filter_search = "alfa"  # not a substring, but close to "Alpha"
+    assert canvas._passes_filters("note-a") is True
+    assert canvas._passes_filters("note-b") is False
+
+
+def test_date_filter_narrows_to_the_range() -> None:
+    canvas = _filters_canvas()
+    canvas._filter_date_from = "2026-02-01"
+    canvas._filter_date_to = "2026-12-31"
+
+    assert canvas._passes_filters("note-a") is False  # updated 2026-01-01
+    assert canvas._passes_filters("note-b") is True  # updated 2026-06-01
+    assert canvas._passes_filters("note-c") is True  # updated 2026-03-01
+
+
+def test_degrees_filter_only_applies_with_a_selection() -> None:
+    canvas = _filters_canvas()
+    canvas._filter_degrees = 1
+    # No selection -- the filter has no effect yet, per its own spec.
+    assert canvas._passes_filters("note-c") is True
+
+    canvas._selected = "note-a"
+    canvas._update_degrees_from_selected()
+    # note-a (itself), note-b (direct edge), index (direct edge) are within
+    # 1 hop; note-c is 2 hops away (note-a -> index -> note-c).
+    assert canvas._passes_filters("note-a") is True
+    assert canvas._passes_filters("note-b") is True
+    assert canvas._passes_filters("index") is True  # exempt anyway
+    assert canvas._passes_filters("note-c") is False
+
+
+def test_filtered_out_nodes_are_excluded_from_shapes_and_hit_testing() -> None:
+    canvas = _filters_canvas()
+    canvas._filter_types = {"concept"}  # only note-a
+
+    static_shapes = canvas._build_static_shapes()
+    circles = [s for s in static_shapes if isinstance(s, cv.Circle)]
+    lines = [s for s in static_shapes if isinstance(s, cv.Line)]
+    # Only note-a and index (exempt) render -- 2 circles. Every edge
+    # touches a filtered-out node except none do here since note-a's own
+    # edges go to index (kept) and note-b (filtered out) -- only the
+    # note-a/index edge should survive.
+    assert len(circles) == 2
+    assert len(lines) == 1
+
+    # note-b's position (20.0, 0.0) is no longer hit-testable.
+    assert canvas._node_at(20.0, 0.0) is None
+    assert canvas._node_at(10.0, 0.0) == "note-a"
+
+
+def test_filter_change_deselects_a_node_that_no_longer_passes() -> None:
+    canvas = _filters_canvas()
+    canvas._selected = "note-b"
+    canvas._update_info_overlay()
+
+    canvas._on_filter_type_changed("entity", False)  # excludes note-b
+
+    assert canvas._selected is None
+    assert canvas._info_overlay.visible is False
+
+
+def test_filters_reset_restores_defaults_and_fires_the_callback() -> None:
+    seen: list[GraphFilterState] = []
+    canvas = GraphCanvas(_page_stub(), on_filters_changed=seen.append)
+    canvas._graph = _filters_fixture_graph()
+    canvas._filter_types = {"concept"}
+    canvas._filter_tags = {"core"}
+    canvas._filter_search = "x"
+    canvas._filter_date_from = "2026-01-01"
+    canvas._filter_degrees = 2
+
+    canvas._on_filters_reset()
+
+    assert canvas._filter_types == {"concept", "entity", "synthesis", "source"}
+    assert canvas._filter_tags == set()
+    assert canvas._filter_search == ""
+    assert canvas._filter_date_from is None
+    assert canvas._filter_degrees is None
+    assert seen[-1] == canvas._current_filter_state()
+
+
+def test_set_filters_syncs_without_firing_the_callback() -> None:
+    seen: list[GraphFilterState] = []
+    canvas = GraphCanvas(_page_stub(), on_filters_changed=seen.append)
+    canvas._graph = _filters_fixture_graph()
+
+    state = GraphFilterState(
+        types=frozenset({"concept"}),
+        tags=frozenset({"core"}),
+        search="alpha",
+        date_from="2026-01-01",
+        date_to=None,
+        degrees=None,
+    )
+    canvas.set_filters(state)
+
+    assert canvas._filter_types == {"concept"}
+    assert canvas._filter_tags == {"core"}
+    assert canvas._filter_search == "alpha"
+    assert seen == []  # syncing from settings is not a user change
+
+
+def test_set_filters_is_a_no_op_for_an_unchanged_state() -> None:
+    canvas = GraphCanvas(_page_stub())
+    state = canvas._current_filter_state()
+    panel_content_before = canvas._settings_panel.content
+
+    canvas.set_filters(state)
+
+    assert canvas._settings_panel.content is panel_content_before
 
 
 def test_selecting_a_node_shows_the_info_overlay() -> None:

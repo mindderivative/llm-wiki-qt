@@ -71,6 +71,19 @@ class GraphViewConfig(BaseModel):
     # of the box, matching the pre-Phase-23 always-on behavior.
     settings_panel_expanded: bool = True
 
+    # Phase 24 -- graph Filters. Lists, not sets: sets don't round-trip
+    # through JSON cleanly; GraphCanvas converts to/from set() at its own
+    # boundary. All four note types shown by default -- filtering starts
+    # as a no-op, matching the pre-Phase-24 always-shown behavior.
+    filter_types: list[str] = Field(
+        default_factory=lambda: ["concept", "entity", "synthesis", "source"]
+    )
+    filter_tags: list[str] = Field(default_factory=list)
+    filter_search: str = ""
+    filter_date_from: str | None = None
+    filter_date_to: str | None = None
+    filter_degrees: int | None = None
+
 
 class AppSettings(BaseSettings):
     """Top-level application configuration; construct via `AppSettings.load()`."""
