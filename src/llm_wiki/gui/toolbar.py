@@ -134,7 +134,6 @@ class Toolbar(ft.Container):
             self.controller.vault_path,
             host=settings.host,
             port=settings.port,
-            transport=settings.transport,
         )
         self._after_action()
 
@@ -150,7 +149,6 @@ class Toolbar(ft.Container):
             self.controller.vault_path,
             host=settings.host,
             port=settings.port,
-            transport=settings.transport,
         )
         self._after_action()
 

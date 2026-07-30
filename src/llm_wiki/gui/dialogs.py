@@ -114,7 +114,6 @@ def build_settings_dialog(
     atomizer_model = _text_input(llm.atomizer_model)
     mcp_host = _text_input(mcp.host)
     mcp_port = _text_input(str(mcp.port))
-    mcp_transport = _text_input(mcp.transport)
     max_degrees = _text_input(str(vault.max_link_degrees))
     auto_watch = ft.Checkbox(
         label="Watch raw/ for new files",
@@ -179,7 +178,6 @@ def build_settings_dialog(
                     [
                         _field("Host", mcp_host),
                         _field("Port", mcp_port),
-                        _field("Transport", mcp_transport),
                     ]
                 ),
             ),
@@ -195,7 +193,6 @@ def build_settings_dialog(
         llm.atomizer_model = atomizer_model.value
         mcp.host = mcp_host.value
         mcp.port = int(mcp_port.value)
-        mcp.transport = mcp_transport.value
         vault.max_link_degrees = int(max_degrees.value)
         vault.auto_watch_raw = auto_watch.value
         controller.save_settings()

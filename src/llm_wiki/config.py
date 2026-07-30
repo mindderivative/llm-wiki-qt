@@ -49,6 +49,11 @@ class MCPServerConfig(BaseModel):
 
     host: str = "127.0.0.1"
     port: int = 8001
+    # No longer read by the GUI (Phase 20) -- `McpProcess` always runs
+    # streamable-http, since `stdio` can't work as a GUI-toggled background
+    # service. Kept in the model so an existing saved config with this key
+    # still loads; `mcp/server.py`'s CLI still supports `--transport`
+    # independently, for an external MCP client to spawn directly.
     transport: str = "stdio"
 
 
