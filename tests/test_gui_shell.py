@@ -23,7 +23,7 @@ import networkx as nx
 import pytest
 
 from llm_wiki.gui import app as app_module
-from llm_wiki.gui import theme
+from llm_wiki.gui import graph_canvas, theme
 from llm_wiki.gui.app_controller import AppController
 from llm_wiki.gui.dialogs import (
     build_new_vault_dialog,
@@ -285,6 +285,50 @@ def test_graph_canvas_handles_an_empty_graph() -> None:
 
     assert canvas.node_positions == {}
     assert canvas.build_shapes() == []
+
+
+def test_graph_canvas_layout_spreads_nodes_apart_at_a_realistic_size() -> None:
+    """Regression: a fixed `k=0.15` in `nx.spring_layout()`, mapped into a
+    canvas whose size never grew with node count, left nodes overlapping
+    for any vault with more than a handful of notes (as little as 1-2px
+    apart at 40-60 nodes -- verified against the pre-fix numbers directly).
+    Mimics the real topology (every note backlinks to `[[index]]` *and*
+    its source, so `index` and each source form hubs with many leaves
+    around them -- the worst case for a force-directed layout). The exact
+    pixel gap spring_layout converges to isn't deterministic enough across
+    seeds/iteration counts to assert a tight number against, so this only
+    asserts the one thing that must always hold: circles don't overlap.
+    """
+    canvas = GraphCanvas(_page_stub())
+    graph = nx.DiGraph()
+    for i in range(17):
+        graph.add_edge(f"note-{i}", "index")
+        graph.add_edge(f"note-{i}", f"source-{i % 3}")
+    canvas._graph = graph
+    canvas._compute_layout()
+
+    positions = list(canvas.node_positions.values())
+    min_distance = min(
+        ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
+        for i, (x1, y1) in enumerate(positions)
+        for x2, y2 in positions[i + 1 :]
+    )
+    assert min_distance > 2 * graph_canvas._NODE_RADIUS
+
+
+def test_graph_canvas_layout_scale_grows_with_node_count() -> None:
+    canvas = GraphCanvas(_page_stub())
+
+    small_graph = nx.DiGraph()
+    small_graph.add_edge("a", "b")
+    canvas._graph = small_graph
+    assert canvas._layout_scale() == 1.0  # below the base node count -- unchanged size
+
+    big_graph = nx.DiGraph()
+    for i in range(50):
+        big_graph.add_edge(f"note-{i}", "index")
+    canvas._graph = big_graph
+    assert canvas._layout_scale() == pytest.approx(51 / graph_canvas._LAYOUT_BASE_NODE_COUNT)
 
 
 def test_graph_canvas_zoom_is_clamped() -> None:

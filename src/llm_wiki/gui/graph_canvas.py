@@ -18,6 +18,12 @@ from llm_wiki.gui import theme
 
 _NODE_RADIUS = 9.0
 _LAYOUT_MARGIN = 60.0
+# Multiplier over spring_layout's own k=1/sqrt(n) default -- see
+# GraphCanvas._layout_positions() for why nodes need more room than that.
+_LAYOUT_SPACING = 4.0
+# Node count the base canvas size (_BASE_WIDTH/_BASE_HEIGHT) was tuned
+# for -- see GraphCanvas._layout_scale().
+_LAYOUT_BASE_NODE_COUNT = 12
 _ZOOM_STEP = 0.15
 _SCROLL_ZOOM_STEP = 0.08
 _MIN_ZOOM = 0.5
@@ -99,9 +105,17 @@ class GraphCanvas(ft.Container):
         """Pure layout computation -- reads only plain attributes, touches no
         Flet control, so it's safe to run off the event-loop thread.
         """
-        if self._graph.number_of_nodes() == 0:
+        node_count = self._graph.number_of_nodes()
+        if node_count == 0:
             return {}
-        pos = nx.spring_layout(self._graph, k=0.15, iterations=50, seed=42)
+        # `spring_layout`'s own default (k=1/sqrt(n)) assumes point-nodes;
+        # ours render as a circle plus a text label underneath, which needs
+        # more breathing room to stay legible -- a fixed k=0.15 was tighter
+        # than even that default once the vault had more than ~44 notes,
+        # and always too tight for a small vault, leaving everything
+        # clustered on top of each other regardless of graph size.
+        k = _LAYOUT_SPACING / (node_count**0.5)
+        pos = nx.spring_layout(self._graph, k=k, iterations=100, seed=42)
         return {str(node): self._to_canvas(float(xy[0]), float(xy[1])) for node, xy in pos.items()}
 
     def _compute_layout(self) -> None:
@@ -123,9 +137,22 @@ class GraphCanvas(ft.Container):
 
     def _to_canvas(self, x: float, y: float) -> tuple[float, float]:
         """Maps a spring-layout vector (roughly -1..1) into canvas pixels."""
-        half_w = (self._width - _LAYOUT_MARGIN * 2) / 2.0
-        half_h = (self._height - _LAYOUT_MARGIN * 2) / 2.0
+        scale = self._layout_scale()
+        half_w = (self._width - _LAYOUT_MARGIN * 2) / 2.0 * scale
+        half_h = (self._height - _LAYOUT_MARGIN * 2) / 2.0 * scale
         return (self._width / 2.0 + x * half_w, self._height / 2.0 + y * half_h)
+
+    def _layout_scale(self) -> float:
+        """A larger vault needs proportionally more virtual canvas space for
+        its nodes not to crowd together -- fitting every note into the same
+        fixed on-screen box regardless of how many there are is what caused
+        them to overlap. Pan and scroll-zoom (added alongside this) are how
+        the user navigates a graph that's now bigger than the visible frame;
+        1.0 (today's fixed size) for small vaults, growing linearly past
+        `_LAYOUT_BASE_NODE_COUNT` notes.
+        """
+        node_count = self._graph.number_of_nodes()
+        return max(1.0, node_count / _LAYOUT_BASE_NODE_COUNT)
 
     def _on_resize(self, e: cv.CanvasResizeEvent) -> None:
         self._width, self._height = e.width, e.height
