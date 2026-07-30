@@ -226,6 +226,9 @@ def test_graph_view_display_settings_default_to_the_built_in_look() -> None:
     assert gv.simulation_enabled is True
     assert gv.simulation_strength == 1.0
     assert gv.invert_scroll_zoom is False
+    assert gv.min_zoom == 0.5
+    assert gv.max_zoom == 2.0
+    assert gv.node_spacing == 4.0
 
 
 def test_graph_view_display_settings_round_trip_through_save(tmp_path: Path) -> None:
@@ -235,6 +238,9 @@ def test_graph_view_display_settings_round_trip_through_save(tmp_path: Path) -> 
     settings.graph_view.simulation_enabled = False
     settings.graph_view.simulation_strength = 1.75
     settings.graph_view.invert_scroll_zoom = True
+    settings.graph_view.min_zoom = 0.3
+    settings.graph_view.max_zoom = 3.5
+    settings.graph_view.node_spacing = 6.5
 
     settings.save(config_path)
     reloaded = AppSettings.load(config_path)
@@ -243,3 +249,6 @@ def test_graph_view_display_settings_round_trip_through_save(tmp_path: Path) -> 
     assert reloaded.graph_view.simulation_enabled is False
     assert reloaded.graph_view.simulation_strength == 1.75
     assert reloaded.graph_view.invert_scroll_zoom is True
+    assert reloaded.graph_view.min_zoom == 0.3
+    assert reloaded.graph_view.max_zoom == 3.5
+    assert reloaded.graph_view.node_spacing == 6.5

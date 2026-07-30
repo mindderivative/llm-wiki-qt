@@ -24,14 +24,24 @@ _NODE_RADIUS = 9.0
 _LAYOUT_MARGIN = 60.0
 # Multiplier over spring_layout's own k=1/sqrt(n) default -- see
 # GraphCanvas._layout_positions() for why nodes need more room than that.
-_LAYOUT_SPACING = 4.0
+# Post-25 fix -- the *default* for self._node_spacing, now user-adjustable
+# via the Layout section's Node Spacing slider; this constant only seeds
+# the starting value.
+_DEFAULT_NODE_SPACING = 4.0
 # Node count the base canvas size (_BASE_WIDTH/_BASE_HEIGHT) was tuned
 # for -- see GraphCanvas._layout_scale().
 _LAYOUT_BASE_NODE_COUNT = 12
 _ZOOM_STEP = 0.15
 _SCROLL_ZOOM_STEP = 0.08
-_MIN_ZOOM = 0.5
-_MAX_ZOOM = 2.0
+# Post-25 fix -- defaults for self._min_zoom/self._max_zoom, now
+# user-adjustable via the Zoom & Pan section's Min/Max Zoom sliders.
+_DEFAULT_MIN_ZOOM = 0.5
+_DEFAULT_MAX_ZOOM = 2.0
+# Fixed bounds *for the sliders themselves* -- distinct from the
+# adjustable min/max-zoom or spacing *values* those sliders control.
+_MIN_ZOOM_SLIDER_RANGE = (0.1, 1.0)
+_MAX_ZOOM_SLIDER_RANGE = (1.0, 5.0)
+_NODE_SPACING_SLIDER_RANGE = (1.0, 8.0)
 # Nominal layout space; the canvas scales to its real size on first resize.
 _BASE_WIDTH = 900.0
 _BASE_HEIGHT = 560.0
@@ -154,6 +164,10 @@ class GraphDisplaySettings(NamedTuple):
     simulation_enabled: bool
     simulation_strength: float
     invert_scroll_zoom: bool
+    # Post-25 fix -- adjustable min/max zoom + a Node Spacing control.
+    min_zoom: float
+    max_zoom: float
+    node_spacing: float
 
 
 def _fuzzy_match(query: str, text: str) -> bool:
@@ -242,6 +256,10 @@ class GraphCanvas(ft.Container):
         self._simulation_enabled = True
         self._simulation_strength = 1.0
         self._invert_scroll_zoom = False
+        # Post-25 fix -- adjustable min/max zoom + a Node Spacing control.
+        self._min_zoom = _DEFAULT_MIN_ZOOM
+        self._max_zoom = _DEFAULT_MAX_ZOOM
+        self._node_spacing = _DEFAULT_NODE_SPACING
 
         self._graph = nx.DiGraph()
         self._positions: dict[str, tuple[float, float]] = {}
@@ -337,7 +355,7 @@ class GraphCanvas(ft.Container):
         # than even that default once the vault had more than ~44 notes,
         # and always too tight for a small vault, leaving everything
         # clustered on top of each other regardless of graph size.
-        k = _LAYOUT_SPACING / (node_count**0.5)
+        k = self._node_spacing / (node_count**0.5)
         pos_seed = None
         fixed = None
         if _GRAVITY_WELL_SLUG in self._graph:
@@ -722,7 +740,7 @@ class GraphCanvas(ft.Container):
         self._set_zoom(1.0)
 
     def _set_zoom(self, value: float, focal: tuple[float, float] | None = None) -> None:
-        new_zoom = max(_MIN_ZOOM, min(_MAX_ZOOM, value))
+        new_zoom = max(self._min_zoom, min(self._max_zoom, value))
         if focal is not None and new_zoom != self._zoom:
             # Keeps the data point under `focal` fixed on screen across the
             # zoom change -- the buttons have no such point, so they don't
@@ -1439,17 +1457,77 @@ class GraphCanvas(ft.Container):
             ],
         )
 
+    def _min_zoom_caption_text(self) -> str:
+        return f"Min Zoom: {self._min_zoom:.2f}x"
+
+    def _max_zoom_caption_text(self) -> str:
+        return f"Max Zoom: {self._max_zoom:.2f}x"
+
     def _build_zoom_pan_content(self) -> ft.Control:
+        min_range, max_range = _MIN_ZOOM_SLIDER_RANGE
+        self._min_zoom_caption = ft.Text(
+            self._min_zoom_caption_text(), size=10, color=theme.TEXT_MUTED
+        )
+        self._min_zoom_slider = ft.Slider(
+            min=min_range,
+            max=max_range,
+            divisions=18,
+            value=self._min_zoom,
+            label="{value}",
+            on_change=lambda e: self._on_min_zoom_changed(round(e.control.value, 2)),
+        )
+        min_range, max_range = _MAX_ZOOM_SLIDER_RANGE
+        self._max_zoom_caption = ft.Text(
+            self._max_zoom_caption_text(), size=10, color=theme.TEXT_MUTED
+        )
+        self._max_zoom_slider = ft.Slider(
+            min=min_range,
+            max=max_range,
+            divisions=16,
+            value=self._max_zoom,
+            label="{value}",
+            on_change=lambda e: self._on_max_zoom_changed(round(e.control.value, 2)),
+        )
         self._invert_scroll_switch = ft.Switch(
             value=self._invert_scroll_zoom,
             on_change=lambda e: self._on_invert_scroll_toggled(e.control.value),
         )
-        return ft.Row(
-            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        return ft.Column(
+            spacing=6,
             controls=[
-                ft.Text("Invert Scroll-Zoom", size=10.5, color=theme.TEXT_TOGGLE_OFF),
-                self._invert_scroll_switch,
+                self._min_zoom_caption,
+                self._min_zoom_slider,
+                self._max_zoom_caption,
+                self._max_zoom_slider,
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    controls=[
+                        ft.Text("Invert Scroll-Zoom", size=10.5, color=theme.TEXT_TOGGLE_OFF),
+                        self._invert_scroll_switch,
+                    ],
+                ),
             ],
+        )
+
+    def _node_spacing_caption_text(self) -> str:
+        return f"Node Spacing: {self._node_spacing:.1f}"
+
+    def _build_layout_content(self) -> ft.Control:
+        min_range, max_range = _NODE_SPACING_SLIDER_RANGE
+        self._node_spacing_caption = ft.Text(
+            self._node_spacing_caption_text(), size=10, color=theme.TEXT_MUTED
+        )
+        self._node_spacing_slider = ft.Slider(
+            min=min_range,
+            max=max_range,
+            divisions=14,
+            value=self._node_spacing,
+            label="{value}",
+            on_change=lambda e: self._on_node_spacing_changed(round(e.control.value, 1)),
+            on_change_end=self._on_node_spacing_change_end,
+        )
+        return ft.Column(
+            spacing=2, controls=[self._node_spacing_caption, self._node_spacing_slider]
         )
 
     def _build_display_settings_section(self) -> ft.Control:
@@ -1460,6 +1538,7 @@ class GraphCanvas(ft.Container):
                     "Physics / Animation", self._build_physics_content()
                 ),
                 self._build_settings_section_box("Zoom & Pan", self._build_zoom_pan_content()),
+                self._build_settings_section_box("Layout", self._build_layout_content()),
             ],
         )
 
@@ -1469,6 +1548,9 @@ class GraphCanvas(ft.Container):
             simulation_enabled=self._simulation_enabled,
             simulation_strength=self._simulation_strength,
             invert_scroll_zoom=self._invert_scroll_zoom,
+            min_zoom=self._min_zoom,
+            max_zoom=self._max_zoom,
+            node_spacing=self._node_spacing,
         )
 
     def _apply_display_settings_change(self) -> None:
@@ -1492,6 +1574,65 @@ class GraphCanvas(ft.Container):
 
     def _on_invert_scroll_toggled(self, enabled: bool) -> None:
         self._invert_scroll_zoom = enabled
+        self._apply_display_settings_change()
+
+    def _on_min_zoom_changed(self, value: float) -> None:
+        """Post-25 fix -- "linked" with Max Zoom: raising Min past the
+        current Max pushes Max up to match too, so the pair can never
+        invert. Mutates the sibling slider directly (same technique
+        `_on_filter_tag_toggled()` already uses for a chip + the tags
+        trigger label), not a rebuild.
+        """
+        self._min_zoom = value
+        if self._max_zoom < value:
+            self._max_zoom = value
+            self._max_zoom_slider.value = value
+            self._max_zoom_caption.value = self._max_zoom_caption_text()
+            with contextlib.suppress(RuntimeError):
+                self._max_zoom_slider.update()
+                self._max_zoom_caption.update()
+        # Re-clamps the *current* zoom inline (not via _set_zoom(), which
+        # would trigger its own redraw on top of _apply_display_settings_
+        # change()'s) in case it now falls outside the narrowed range.
+        self._zoom = max(self._min_zoom, min(self._max_zoom, self._zoom))
+        self._min_zoom_caption.value = self._min_zoom_caption_text()
+        with contextlib.suppress(RuntimeError):
+            self._min_zoom_caption.update()
+        self._apply_display_settings_change()
+
+    def _on_max_zoom_changed(self, value: float) -> None:
+        self._max_zoom = value
+        if self._min_zoom > value:
+            self._min_zoom = value
+            self._min_zoom_slider.value = value
+            self._min_zoom_caption.value = self._min_zoom_caption_text()
+            with contextlib.suppress(RuntimeError):
+                self._min_zoom_slider.update()
+                self._min_zoom_caption.update()
+        self._zoom = max(self._min_zoom, min(self._max_zoom, self._zoom))
+        self._max_zoom_caption.value = self._max_zoom_caption_text()
+        with contextlib.suppress(RuntimeError):
+            self._max_zoom_caption.update()
+        self._apply_display_settings_change()
+
+    def _on_node_spacing_changed(self, value: float) -> None:
+        """Live caption only -- no relayout yet. Relaying out on every
+        intermediate drag tick (`on_change` fires continuously) would spam
+        `nx.spring_layout()` calls; the real relayout happens once, in
+        `_on_node_spacing_change_end()`.
+        """
+        self._node_spacing = value
+        self._node_spacing_caption.value = self._node_spacing_caption_text()
+        with contextlib.suppress(RuntimeError):
+            self._node_spacing_caption.update()
+
+    def _on_node_spacing_change_end(self, e=None) -> None:
+        """Fires once, when the drag gesture completes -- the actual
+        relayout. Reuses `_layout_worker()`/`_apply_positions()` verbatim,
+        the exact off-thread-compute-then-run_task-back path `set_graph()`
+        already established, not a new mechanism.
+        """
+        self._page.run_thread(self._layout_worker)
         self._apply_display_settings_change()
 
     def _sync_display_controls_to_state(self) -> None:
@@ -1518,6 +1659,20 @@ class GraphCanvas(ft.Container):
         self._invert_scroll_switch.value = self._invert_scroll_zoom
         with contextlib.suppress(RuntimeError):
             self._invert_scroll_switch.update()
+        self._min_zoom_slider.value = self._min_zoom
+        self._min_zoom_caption.value = self._min_zoom_caption_text()
+        self._max_zoom_slider.value = self._max_zoom
+        self._max_zoom_caption.value = self._max_zoom_caption_text()
+        with contextlib.suppress(RuntimeError):
+            self._min_zoom_slider.update()
+            self._min_zoom_caption.update()
+            self._max_zoom_slider.update()
+            self._max_zoom_caption.update()
+        self._node_spacing_slider.value = self._node_spacing
+        self._node_spacing_caption.value = self._node_spacing_caption_text()
+        with contextlib.suppress(RuntimeError):
+            self._node_spacing_slider.update()
+            self._node_spacing_caption.update()
 
     def set_display_settings(self, state: GraphDisplaySettings) -> None:
         """Syncs Colors/Physics/Zoom-Pan from persisted settings -- called
@@ -1527,6 +1682,7 @@ class GraphCanvas(ft.Container):
         """
         if state == self._current_display_settings():
             return
+        spacing_changed = state.node_spacing != self._node_spacing
         # Merges over the built-in defaults rather than assigning
         # directly -- a persisted config missing a key (an older save, or
         # a future new type) must never leave a lookup elsewhere without
@@ -1535,8 +1691,16 @@ class GraphCanvas(ft.Container):
         self._simulation_enabled = state.simulation_enabled
         self._simulation_strength = state.simulation_strength
         self._invert_scroll_zoom = state.invert_scroll_zoom
+        self._min_zoom = state.min_zoom
+        self._max_zoom = state.max_zoom
+        self._node_spacing = state.node_spacing
         self._sync_display_controls_to_state()
-        self._redraw_all()
+        if spacing_changed:
+            # A layout input actually changed -- relayout, the same path
+            # the live Node Spacing slider's on_change_end triggers.
+            self._page.run_thread(self._layout_worker)
+        else:
+            self._redraw_all()
 
     def _toggle_settings_panel(self, e=None) -> None:
         self._settings_panel_expanded = not self._settings_panel_expanded

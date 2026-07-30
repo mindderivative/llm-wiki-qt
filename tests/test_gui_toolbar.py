@@ -416,12 +416,16 @@ def test_graph_display_settings_changed_is_a_no_op_without_a_vault(page):
         simulation_enabled=False,
         simulation_strength=1.5,
         invert_scroll_zoom=True,
+        min_zoom=0.3,
+        max_zoom=3.0,
+        node_spacing=5.5,
     )
 
     shell._on_graph_display_settings_changed(state)  # must not raise
 
     assert shell.controller.settings.graph_view.type_colors == {}
     assert shell.controller.settings.graph_view.simulation_enabled is True
+    assert shell.controller.settings.graph_view.node_spacing == 4.0
 
 
 def test_graph_display_settings_changed_persists_when_a_vault_is_open(page, vault_root: Path):
@@ -431,6 +435,9 @@ def test_graph_display_settings_changed_persists_when_a_vault_is_open(page, vaul
         simulation_enabled=False,
         simulation_strength=1.75,
         invert_scroll_zoom=True,
+        min_zoom=0.3,
+        max_zoom=3.0,
+        node_spacing=5.5,
     )
 
     try:
@@ -443,10 +450,14 @@ def test_graph_display_settings_changed_persists_when_a_vault_is_open(page, vaul
         assert gv.simulation_enabled is False
         assert gv.simulation_strength == 1.75
         assert gv.invert_scroll_zoom is True
+        assert gv.min_zoom == 0.3
+        assert gv.max_zoom == 3.0
+        assert gv.node_spacing == 5.5
 
         reloaded = AppSettings.load(vault_root / ".llm-wiki-config")
         assert reloaded.graph_view.type_colors == {"concept": "#123456", "index": "#654321"}
         assert reloaded.graph_view.simulation_strength == 1.75
+        assert reloaded.graph_view.node_spacing == 5.5
     finally:
         shell.raw_watcher.stop()  # opening the vault started it (auto_watch_raw defaults on)
 

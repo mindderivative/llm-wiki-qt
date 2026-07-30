@@ -126,6 +126,12 @@ class GraphViewConfig(BaseModel):
     simulation_strength: float = 1.0
     invert_scroll_zoom: bool = False
 
+    # Post-25 fix -- adjustable min/max zoom + a Node Spacing control.
+    # Defaults match the fixed constants they replace exactly.
+    min_zoom: float = 0.5
+    max_zoom: float = 2.0
+    node_spacing: float = 4.0
+
 
 class AppSettings(BaseSettings):
     """Top-level application configuration; construct via `AppSettings.load()`."""

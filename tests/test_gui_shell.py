@@ -177,16 +177,21 @@ def test_reopening_a_vault_closes_the_previous_connection(
 
 
 class _PageStub:
-    """A `page` placeholder for tests that never touch `set_graph()`'s
-    threaded path -- everything else on `GraphCanvas` reads/writes plain
-    state. `run_task()` is a no-op: `_start_simulation()` (Phase 22) calls
-    it on any node-drag start, but never awaits or inspects the result, so
-    tests that don't care about the live simulation loop itself can ignore
-    it entirely rather than needing the real `_FakePage` thread-crossing
-    double.
+    """A `page` placeholder for tests that never touch `set_graph()`'s (or,
+    Post-25 fix, `_on_node_spacing_change_end()`'s) threaded path --
+    everything else on `GraphCanvas` reads/writes plain state. Both
+    `run_task()` and `run_thread()` are no-ops: `_start_simulation()`
+    (Phase 22) calls `run_task()` on any node-drag start, and the Node
+    Spacing slider's `on_change_end` calls `run_thread()`, but neither is
+    awaited or inspected here, so tests that don't care about the live
+    simulation loop or a real relayout can ignore both entirely rather
+    than needing the real `_FakePage` thread-crossing double.
     """
 
     def run_task(self, handler, *args, **kwargs) -> None:
+        pass
+
+    def run_thread(self, handler, *args, **kwargs) -> None:
         pass
 
 
@@ -1118,7 +1123,135 @@ def test_invert_scroll_zoom_flips_the_wheel_direction() -> None:
     assert canvas.zoom < start_zoom
 
 
+# --- Min/max zoom, Node Spacing (Post-25 fix) -------------------------------
+
+
+def test_min_zoom_pushes_max_zoom_up_when_it_would_invert() -> None:
+    canvas = GraphCanvas(_page_stub())
+
+    canvas._on_min_zoom_changed(3.0)  # above the default 2.0 max
+
+    assert canvas._min_zoom == 3.0
+    assert canvas._max_zoom == 3.0  # pushed up to match, never inverted
+    assert canvas._max_zoom_slider.value == 3.0
+
+
+def test_max_zoom_pushes_min_zoom_down_when_it_would_invert() -> None:
+    canvas = GraphCanvas(_page_stub())
+
+    canvas._on_max_zoom_changed(0.2)  # below the default 0.5 min
+
+    assert canvas._max_zoom == 0.2
+    assert canvas._min_zoom == 0.2  # pushed down to match, never inverted
+    assert canvas._min_zoom_slider.value == 0.2
+
+
+def test_current_zoom_reclamps_when_the_range_narrows() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._zoom = 1.8
+
+    canvas._on_max_zoom_changed(1.2)  # narrower than the current zoom
+
+    assert canvas.zoom == 1.2
+
+
+def test_min_max_zoom_changes_do_not_rebuild_the_settings_panel() -> None:
+    canvas = GraphCanvas(_page_stub())
+    panel_content_before = canvas._settings_panel.content
+
+    canvas._on_min_zoom_changed(0.3)
+    canvas._on_max_zoom_changed(3.0)
+
+    assert canvas._settings_panel.content is panel_content_before
+
+
+def test_node_spacing_affects_computed_layout_distances() -> None:
+    """Pure `_layout_positions()` sensitivity check (no threading
+    involved) -- a higher spacing value should spread nodes further apart
+    within the same rescaled bounding radius, not just render differently
+    by coincidence. Verified directly before writing this assertion, same
+    "verify, don't guess" habit this project already established.
+    """
+
+    def _min_pairwise_distance(canvas: GraphCanvas) -> float:
+        positions = list(canvas.node_positions.values())
+        return min(
+            math.dist(a, b) for i, a in enumerate(positions) for b in positions[i + 1 :]
+        )
+
+    graph = nx.DiGraph()
+    for i in range(17):
+        graph.add_edge(f"note-{i}", "index")
+        graph.add_edge(f"note-{i}", f"source-{i % 3}")
+
+    tight_canvas = GraphCanvas(_page_stub())
+    tight_canvas._graph = graph
+    tight_canvas._node_spacing = 1.0
+    tight_canvas._compute_layout()
+
+    loose_canvas = GraphCanvas(_page_stub())
+    loose_canvas._graph = graph
+    loose_canvas._node_spacing = 8.0
+    loose_canvas._compute_layout()
+
+    assert _min_pairwise_distance(loose_canvas) > _min_pairwise_distance(tight_canvas)
+
+
+def test_node_spacing_on_change_only_updates_the_caption() -> None:
+    """`on_change` (fires continuously while dragging) must never trigger
+    a relayout -- only `on_change_end` does. Uses `_page_stub()`, whose
+    `run_thread()` is a no-op, so this only proves the caption path is
+    reached without needing to distinguish "no relayout" from "relayout
+    silently swallowed" -- the real relayout-triggering assertion is the
+    `_FakePage`-based end-to-end test below.
+    """
+    canvas = GraphCanvas(_page_stub())
+
+    canvas._on_node_spacing_changed(6.5)
+
+    assert canvas._node_spacing == 6.5
+    assert canvas._node_spacing_caption.value == "Node Spacing: 6.5"
+    assert canvas._node_spacing_slider.value != 6.5  # e.control.value only reflects on real drag
+
+
+def test_node_spacing_change_end_triggers_a_real_relayout() -> None:
+    """Exercises the real `page.run_thread()` -> `page.run_task()` path,
+    matching `test_set_graph_computes_layout_on_a_worker_thread`'s own
+    precedent for `set_graph()`.
+    """
+    fake_page = _FakePage()
+    try:
+        canvas = GraphCanvas(fake_page)
+        canvas._graph = _fixture_graph()
+        canvas._node_spacing = 7.0
+
+        canvas._on_node_spacing_change_end()
+
+        _wait_until(lambda: canvas.node_positions != {})
+        assert sorted(canvas.node_positions) == ["alpha", "beta", "gamma"]
+    finally:
+        fake_page.close()
+
+
 # --- Display settings sync (Phase 25) ---------------------------------------
+
+
+def test_set_display_settings_triggers_a_relayout_when_spacing_changes() -> None:
+    fake_page = _FakePage()
+    try:
+        canvas = GraphCanvas(fake_page)
+        canvas._graph = _fixture_graph()
+        canvas._compute_layout()
+        _wait_until(lambda: canvas.node_positions != {})
+        positions_before = dict(canvas.node_positions)
+
+        state = canvas._current_display_settings()._replace(node_spacing=7.0)
+        canvas.set_display_settings(state)
+
+        _wait_until(lambda: canvas.node_positions != positions_before)
+        assert canvas._node_spacing == 7.0
+    finally:
+        fake_page.close()
 
 
 def test_set_display_settings_is_a_no_op_for_an_unchanged_state() -> None:
@@ -1141,6 +1274,9 @@ def test_set_display_settings_merges_partial_type_colors_over_defaults() -> None
             simulation_enabled=False,
             simulation_strength=1.5,
             invert_scroll_zoom=True,
+            min_zoom=0.5,
+            max_zoom=2.0,
+            node_spacing=4.0,
         )
     )
 

@@ -247,18 +247,13 @@ class Shell:
 
     def _on_vault_changed(self) -> None:
         self.menu_container.content = self._build_menu()
-        if self.controller.conn is not None:
-            self.graph.set_graph(get_graph_data(self.controller.conn))
-            self.health_panel.set_connection(self.controller.conn)
-            self.dashboard_panel.set_connection(self.controller.conn, self.controller.vault_path)
-            self.items_panel.set_connection(self.controller.conn)
-        self.git_panel.set_vault_path(self.controller.vault_path)
 
-        llm = self.controller.settings.llm_provider
-        client = LlamaClient(base_url=llm.base_url, api_key=llm.api_key or DEFAULT_API_KEY)
-        self.pipeline_adapter.configure(self.controller.vault_path, client, llm.chat_model)
-        self.chat_panel.configure(self.controller.vault_path, client, llm.chat_model)
-        self.terminal_panel.configure(self.controller.vault_path)
+        # Post-25 fix: synced *before* set_graph() below, not after --
+        # node_spacing is a genuine layout input (unlike Phase 25's
+        # colors/physics/zoom-invert, all render/drag-time only), so the
+        # vault's *first* layout must already see the persisted spacing
+        # rather than computing once at the default and immediately
+        # relaying out again once this sync runs.
         self.graph.set_settings_panel_expanded(
             self.controller.settings.graph_view.settings_panel_expanded
         )
@@ -285,8 +280,24 @@ class Shell:
                 simulation_enabled=gv.simulation_enabled,
                 simulation_strength=gv.simulation_strength,
                 invert_scroll_zoom=gv.invert_scroll_zoom,
+                min_zoom=gv.min_zoom,
+                max_zoom=gv.max_zoom,
+                node_spacing=gv.node_spacing,
             )
         )
+
+        if self.controller.conn is not None:
+            self.graph.set_graph(get_graph_data(self.controller.conn))
+            self.health_panel.set_connection(self.controller.conn)
+            self.dashboard_panel.set_connection(self.controller.conn, self.controller.vault_path)
+            self.items_panel.set_connection(self.controller.conn)
+        self.git_panel.set_vault_path(self.controller.vault_path)
+
+        llm = self.controller.settings.llm_provider
+        client = LlamaClient(base_url=llm.base_url, api_key=llm.api_key or DEFAULT_API_KEY)
+        self.pipeline_adapter.configure(self.controller.vault_path, client, llm.chat_model)
+        self.chat_panel.configure(self.controller.vault_path, client, llm.chat_model)
+        self.terminal_panel.configure(self.controller.vault_path)
         self._sync_raw_watcher()
 
         self.page.title = (
@@ -340,6 +351,9 @@ class Shell:
         gv.simulation_enabled = state.simulation_enabled
         gv.simulation_strength = state.simulation_strength
         gv.invert_scroll_zoom = state.invert_scroll_zoom
+        gv.min_zoom = state.min_zoom
+        gv.max_zoom = state.max_zoom
+        gv.node_spacing = state.node_spacing
         self.controller.save_settings()
 
     def _sync_raw_watcher(self) -> None:
