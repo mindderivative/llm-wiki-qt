@@ -97,10 +97,22 @@ class GraphCanvas(ft.Container):
         self._sim_active_nodes: set[str] = set()
         self._sim_active = False
         self._sim_settle_ticks = 0
+        # Post-22 fix -- tracks the dynamic-canvas node set as of the last
+        # tick, so _simulation_tick() can report whether it changed.
+        self._prev_dynamic_slugs: set[str] = set()
 
-        self._canvas = cv.Canvas(shapes=[], expand=True, on_resize=self._on_resize)
+        # Two layered canvases (Post-22 fix), not one: during a drag, only
+        # the small _dynamic_canvas needs to be rebuilt+diffed+sent at
+        # ~30fps -- the bulk of the graph on _static_canvas stays untouched.
+        # on_resize only needs to live on one of them; both are expand=True
+        # in the same Stack, so they always share the same rendered size.
+        self._static_canvas = cv.Canvas(shapes=[], expand=True, on_resize=self._on_resize)
+        self._dynamic_canvas = cv.Canvas(shapes=[], expand=True)
+        self._canvas_layers = ft.Stack(
+            controls=[self._static_canvas, self._dynamic_canvas], expand=True
+        )
         self._gestures = ft.GestureDetector(
-            content=self._canvas,
+            content=self._canvas_layers,
             expand=True,
             on_pan_start=self._on_pan_start,
             on_pan_update=self._on_pan_update,
@@ -157,11 +169,12 @@ class GraphCanvas(ft.Container):
     def _compute_layout(self) -> None:
         """Synchronous entry point kept for direct test use. Production code
         goes through `set_graph()` -> `_layout_worker()` instead, which hops
-        back via `page.run_task()` before the resulting `_redraw()` touches
-        `self._canvas` -- `Control.update()` assumes the event-loop thread.
+        back via `page.run_task()` before the resulting `_redraw_all()`
+        touches the canvases -- `Control.update()` assumes the event-loop
+        thread.
         """
         self._positions = self._layout_positions()
-        self._redraw()
+        self._redraw_all()
 
     def _layout_worker(self) -> None:
         positions = self._layout_positions()
@@ -169,7 +182,7 @@ class GraphCanvas(ft.Container):
 
     async def _apply_positions(self, positions: dict[str, tuple[float, float]]) -> None:
         self._positions = positions
-        self._redraw()
+        self._redraw_all()
 
     def _to_canvas(self, x: float, y: float) -> tuple[float, float]:
         """Maps a spring-layout vector (roughly -1..1) into canvas pixels."""
@@ -192,7 +205,7 @@ class GraphCanvas(ft.Container):
 
     def _on_resize(self, e: cv.CanvasResizeEvent) -> None:
         self._width, self._height = e.width, e.height
-        self._redraw()
+        self._redraw_all()
 
     # --- Interaction --------------------------------------------------------
 
@@ -236,11 +249,11 @@ class GraphCanvas(ft.Container):
             # (e.g. a graph reload mid-drag stopped it), fall back to
             # redrawing directly so the drag never silently stops rendering.
             if not self._sim_active:
-                self._redraw()
+                self._redraw_all()
         elif self._panning:
             self._pan_x += e.local_delta.x
             self._pan_y += e.local_delta.y
-            self._redraw()
+            self._redraw_all()
 
     def _on_pan_end(self, e: ft.DragEndEvent) -> None:
         self._dragging = None
@@ -257,21 +270,36 @@ class GraphCanvas(ft.Container):
         self._sim_velocities = {}
         self._sim_active_nodes = set()
         self._sim_settle_ticks = 0
+        # Forces the first tick to report "changed" (see _simulation_tick())
+        # so the anchor is moved into the dynamic layer immediately.
+        self._prev_dynamic_slugs = set()
         if not self._sim_active:
             self._sim_active = True
             self._page.run_task(self._simulation_loop)
 
     async def _simulation_loop(self) -> None:
         while self._sim_active:
-            self._simulation_tick()
-            self._redraw()
+            changed = self._simulation_tick()
+            # A full redraw is only needed when a node actually crossed
+            # between the static and dynamic canvases this tick (Post-22
+            # fix) -- the common case is a steady-state tick where only
+            # the (already dynamic) shapes moved, so only that small
+            # canvas needs rebuilding+diffing+sending.
+            if changed:
+                self._redraw_all()
+            else:
+                self._redraw_dynamic()
             await asyncio.sleep(_SIM_TICK_DT)
 
-    def _simulation_tick(self) -> None:
+    def _simulation_tick(self) -> bool:
         """One physics step. Reads/writes only `self._positions` /
         `self._sim_velocities` / `self._sim_active_nodes` -- touches no
         Flet control, so it's safe to call directly (e.g. from tests) and
         cheap enough to run every tick on the event-loop thread.
+
+        Returns whether the dynamic node set's membership changed this
+        tick (a node entered or left) -- the caller uses this to decide
+        whether the static canvas needs rebuilding too.
         """
         anchor = self._dragging
         neighbors: set[str] = set()
@@ -342,11 +370,16 @@ class GraphCanvas(ft.Container):
         ):
             self._sim_active = False
 
+        current_dynamic = self._dynamic_slugs()
+        changed = current_dynamic != self._prev_dynamic_slugs
+        self._prev_dynamic_slugs = current_dynamic
+        return changed
+
     def _notify_selection(self) -> None:
         if self.on_node_selected is not None:
             self.on_node_selected(self._selected)
         self._update_info_overlay()
-        self._redraw()
+        self._redraw_all()
 
     def zoom_in(self, e=None) -> None:
         self._set_zoom(self._zoom + _ZOOM_STEP)
@@ -368,7 +401,7 @@ class GraphCanvas(ft.Container):
             self._pan_x = fx + (self._pan_x - fx) * ratio
             self._pan_y = fy + (self._pan_y - fy) * ratio
         self._zoom = new_zoom
-        self._redraw()
+        self._redraw_all()
 
     def _on_scroll(self, e: ft.ScrollEvent) -> None:
         # Scroll up (negative dy) zooms in, matching maps/design-tool convention.
@@ -377,53 +410,107 @@ class GraphCanvas(ft.Container):
 
     # --- Drawing ------------------------------------------------------------
 
-    def build_shapes(self) -> list[cv.Shape]:
-        """The canvas' edge and node shapes for the current layout."""
-        shapes: list[cv.Shape] = []
+    def _dynamic_slugs(self) -> set[str]:
+        """Nodes rendered on the dynamic canvas: the actively-simulated set
+        plus the node currently under the cursor, if any -- see the
+        Post-22 static/dynamic split for why this needs to stay a live
+        computation, not a cached one.
+        """
+        slugs = set(self._sim_active_nodes)
+        if self._dragging is not None:
+            slugs.add(self._dragging)
+        return slugs
+
+    def _node_shape(self, slug: str, x: float, y: float) -> list[cv.Shape]:
+        color = (
+            theme.ACCENT if slug == self._selected else theme.CATEGORY_COLORS[_category_of(slug)]
+        )
+        sx = x * self._zoom + self._pan_x
+        sy = y * self._zoom + self._pan_y
+        return [
+            cv.Circle(sx, sy, _NODE_RADIUS * self._zoom, paint=ft.Paint(color=color)),
+            cv.Text(
+                sx,
+                sy + _NODE_RADIUS * self._zoom + 3,
+                slug,
+                style=ft.TextStyle(size=10.5, color=theme.TEXT_NODE),
+                alignment=ft.Alignment.TOP_CENTER,
+            ),
+        ]
+
+    def _edge_shape(self, u: str, v: str, edge_paint: ft.Paint) -> cv.Shape | None:
+        if u not in self._positions or v not in self._positions:
+            return None
+        x1, y1 = self._positions[u]
+        x2, y2 = self._positions[v]
+        return cv.Line(
+            x1 * self._zoom + self._pan_x,
+            y1 * self._zoom + self._pan_y,
+            x2 * self._zoom + self._pan_x,
+            y2 * self._zoom + self._pan_y,
+            paint=edge_paint,
+        )
+
+    def _build_static_shapes(self) -> list[cv.Shape]:
+        """Everything not currently touched by the simulation -- redrawn
+        only on real state changes (layout, resize, pan, zoom, selection),
+        never on the per-tick simulation hot path.
+        """
+        dynamic = self._dynamic_slugs()
         edge_paint = ft.Paint(color=theme.GRAPH_EDGE, stroke_width=1.8)
-
+        shapes: list[cv.Shape] = []
         for u, v in self._graph.edges():
-            if u in self._positions and v in self._positions:
-                x1, y1 = self._positions[u]
-                x2, y2 = self._positions[v]
-                shapes.append(
-                    cv.Line(
-                        x1 * self._zoom + self._pan_x,
-                        y1 * self._zoom + self._pan_y,
-                        x2 * self._zoom + self._pan_x,
-                        y2 * self._zoom + self._pan_y,
-                        paint=edge_paint,
-                    )
-                )
-
+            if u in dynamic or v in dynamic:
+                continue
+            shape = self._edge_shape(u, v, edge_paint)
+            if shape is not None:
+                shapes.append(shape)
         for slug, (x, y) in self._positions.items():
-            color = (
-                theme.ACCENT
-                if slug == self._selected
-                else theme.CATEGORY_COLORS[_category_of(slug)]
-            )
-            sx = x * self._zoom + self._pan_x
-            sy = y * self._zoom + self._pan_y
-            shapes.append(
-                cv.Circle(sx, sy, _NODE_RADIUS * self._zoom, paint=ft.Paint(color=color))
-            )
-            shapes.append(
-                cv.Text(
-                    sx,
-                    sy + _NODE_RADIUS * self._zoom + 3,
-                    slug,
-                    style=ft.TextStyle(size=10.5, color=theme.TEXT_NODE),
-                    alignment=ft.Alignment.TOP_CENTER,
-                )
-            )
-
+            if slug in dynamic:
+                continue
+            shapes.extend(self._node_shape(slug, x, y))
         return shapes
 
-    def _redraw(self) -> None:
-        self._canvas.shapes = self.build_shapes()
+    def _build_dynamic_shapes(self) -> list[cv.Shape]:
+        """The actively-simulated node set plus any edge touching it --
+        redrawn every simulation tick. Kept small on purpose: this is the
+        one canvas that pays the redraw cost at ~30fps during a drag.
+        """
+        dynamic = self._dynamic_slugs()
+        edge_paint = ft.Paint(color=theme.GRAPH_EDGE, stroke_width=1.8)
+        shapes: list[cv.Shape] = []
+        for u, v in self._graph.edges():
+            if u in dynamic or v in dynamic:
+                shape = self._edge_shape(u, v, edge_paint)
+                if shape is not None:
+                    shapes.append(shape)
+        for slug in dynamic:
+            pos = self._positions.get(slug)
+            if pos is not None:
+                shapes.extend(self._node_shape(slug, *pos))
+        return shapes
+
+    def build_shapes(self) -> list[cv.Shape]:
+        """All shapes for the current state, regardless of the static/
+        dynamic render split -- the combined view tests and any other
+        caller wanting the full picture should use.
+        """
+        return self._build_static_shapes() + self._build_dynamic_shapes()
+
+    def _redraw_static(self) -> None:
+        self._static_canvas.shapes = self._build_static_shapes()
         # Suppressed while unattached: the initial build, and headless tests.
         with contextlib.suppress(RuntimeError):
-            self._canvas.update()
+            self._static_canvas.update()
+
+    def _redraw_dynamic(self) -> None:
+        self._dynamic_canvas.shapes = self._build_dynamic_shapes()
+        with contextlib.suppress(RuntimeError):
+            self._dynamic_canvas.update()
+
+    def _redraw_all(self) -> None:
+        self._redraw_static()
+        self._redraw_dynamic()
 
     def _build_legend(self) -> ft.Control:
         return ft.Container(

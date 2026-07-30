@@ -695,13 +695,15 @@ def test_pan_update_does_not_redraw_directly_while_the_simulation_is_running() -
     canvas = _simulation_canvas()
     _pan_start_at(canvas, 400.0, 300.0)  # starts the simulation (also redraws once, for selection)
     assert canvas._sim_active is True
-    shapes_after_select = canvas._canvas.shapes
+    static_after_select = canvas._static_canvas.shapes
+    dynamic_after_select = canvas._dynamic_canvas.shapes
 
     _pan_update_to(canvas, 500.0, 300.0, dx=100.0, dy=0.0)
 
-    # _redraw() always builds a fresh list -- the same object surviving
-    # proves _on_pan_update() didn't call it again.
-    assert canvas._canvas.shapes is shapes_after_select
+    # _redraw_static()/_redraw_dynamic() always build a fresh list -- the
+    # same objects surviving prove _on_pan_update() didn't call either.
+    assert canvas._static_canvas.shapes is static_after_select
+    assert canvas._dynamic_canvas.shapes is dynamic_after_select
 
 
 def test_pan_update_still_redraws_directly_if_the_simulation_is_not_running() -> None:
@@ -715,7 +717,9 @@ def test_pan_update_still_redraws_directly_if_the_simulation_is_not_running() ->
 
     _pan_update_to(canvas, 500.0, 300.0, dx=100.0, dy=0.0)
 
-    assert canvas._canvas.shapes != []
+    # "anchor" is the dragged node, so it (and its edge to "neighbor")
+    # render on the dynamic canvas.
+    assert canvas._dynamic_canvas.shapes != []
 
 
 def test_set_graph_stops_an_in_flight_simulation() -> None:
@@ -742,6 +746,76 @@ def test_set_graph_stops_an_in_flight_simulation() -> None:
         _wait_until(lambda: sorted(canvas.node_positions) == ["alpha", "beta", "gamma"])
     finally:
         fake_page.close()
+
+
+# --- Static/dynamic render split (Post-22 fix) --------------------------
+
+
+def test_static_layer_holds_everything_before_any_drag() -> None:
+    canvas = _simulation_canvas()
+
+    assert canvas._dynamic_slugs() == set()
+    assert canvas._build_dynamic_shapes() == []
+    # 1 edge (anchor-neighbor) + 4 nodes x (circle + label).
+    assert len(canvas._build_static_shapes()) == 9
+
+
+def test_dragging_partitions_shapes_between_static_and_dynamic_layers() -> None:
+    canvas = _simulation_canvas()
+    _pan_start_at(canvas, 400.0, 300.0)  # hits "anchor"
+    _pan_update_to(canvas, 500.0, 300.0, dx=100.0, dy=0.0)
+    canvas._simulation_tick()  # pulls "neighbor" (edge) and "bystander" (proximity) in
+
+    assert canvas._dynamic_slugs() == {"anchor", "neighbor", "bystander"}
+
+    static_shapes = canvas._build_static_shapes()
+    dynamic_shapes = canvas._build_dynamic_shapes()
+
+    # "far" is the only untouched node -- 1 node x 2 shapes, no edges (the
+    # only edge in the fixture touches the now-dynamic anchor/neighbor pair).
+    assert len(static_shapes) == 2
+    # 3 dynamic nodes x 2 shapes + their connecting edge.
+    assert len(dynamic_shapes) == 7
+    # Nothing is duplicated or dropped between the two layers.
+    assert len(static_shapes) + len(dynamic_shapes) == len(canvas.build_shapes())
+
+    static_lines = [s for s in static_shapes if isinstance(s, cv.Line)]
+    dynamic_lines = [s for s in dynamic_shapes if isinstance(s, cv.Line)]
+    assert len(static_lines) == 0
+    assert len(dynamic_lines) == 1
+
+
+def test_simulation_tick_reports_changed_only_on_set_transitions() -> None:
+    canvas = _simulation_canvas()
+    _pan_start_at(canvas, 400.0, 300.0)  # hits "anchor"
+    _pan_update_to(canvas, 500.0, 300.0, dx=100.0, dy=0.0)
+
+    # First tick: the anchor becomes dynamic for the first time.
+    assert canvas._simulation_tick() is True
+
+    # Steady state: same drag, no new node enters/leaves this tick.
+    assert canvas._simulation_tick() is False
+
+    # Release: on the tick where the anchor drops out of the dynamic set
+    # (and nothing else changes yet), membership changes again.
+    _pan_end(canvas)
+    assert canvas._simulation_tick() is True
+
+
+def test_redraw_static_and_dynamic_touch_only_their_own_canvas() -> None:
+    canvas = _simulation_canvas()
+    canvas._redraw_all()
+    static_before = canvas._static_canvas.shapes
+    dynamic_before = canvas._dynamic_canvas.shapes
+
+    canvas._redraw_static()
+    assert canvas._static_canvas.shapes is not static_before  # rebuilt
+    assert canvas._dynamic_canvas.shapes is dynamic_before  # untouched
+
+    static_after_static_redraw = canvas._static_canvas.shapes
+    canvas._redraw_dynamic()
+    assert canvas._dynamic_canvas.shapes is not dynamic_before  # rebuilt
+    assert canvas._static_canvas.shapes is static_after_static_redraw  # untouched
 
 
 def test_dragging_a_node_end_to_end_runs_and_settles_the_simulation() -> None:
