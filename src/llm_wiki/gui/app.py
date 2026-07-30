@@ -23,7 +23,7 @@ from llm_wiki.gui.dialogs import (
 )
 from llm_wiki.gui.dock import DockArea
 from llm_wiki.gui.git_panel import GitPanel
-from llm_wiki.gui.graph_canvas import GraphCanvas, GraphFilterState
+from llm_wiki.gui.graph_canvas import GraphCanvas, GraphDisplaySettings, GraphFilterState
 from llm_wiki.gui.health_panel import HealthPanel
 from llm_wiki.gui.items_panel import ItemsPanel
 from llm_wiki.gui.log_panel import LogPanel
@@ -73,6 +73,7 @@ class Shell:
             page,
             on_settings_panel_toggled=self._on_graph_settings_panel_toggled,
             on_filters_changed=self._on_graph_filters_changed,
+            on_display_settings_changed=self._on_graph_display_settings_changed,
         )
         self.file_picker = ft.FilePicker()
         # FilePicker is a Service, not a visual Control -- it belongs on
@@ -278,6 +279,14 @@ class Shell:
                 degrees_enabled=gv.filter_degrees_enabled,
             )
         )
+        self.graph.set_display_settings(
+            GraphDisplaySettings(
+                type_colors=dict(gv.type_colors),
+                simulation_enabled=gv.simulation_enabled,
+                simulation_strength=gv.simulation_strength,
+                invert_scroll_zoom=gv.invert_scroll_zoom,
+            )
+        )
         self._sync_raw_watcher()
 
         self.page.title = (
@@ -317,6 +326,20 @@ class Shell:
         gv.filter_search_enabled = state.search_enabled
         gv.filter_date_enabled = state.date_enabled
         gv.filter_degrees_enabled = state.degrees_enabled
+        self.controller.save_settings()
+
+    def _on_graph_display_settings_changed(self, state: GraphDisplaySettings) -> None:
+        """Persists the graph canvas Colors/Physics/Zoom-Pan (Phase 25) --
+        a no-op before any vault is open, mirroring
+        `_on_graph_filters_changed`.
+        """
+        if not self.controller.has_vault:
+            return
+        gv = self.controller.settings.graph_view
+        gv.type_colors = dict(state.type_colors)
+        gv.simulation_enabled = state.simulation_enabled
+        gv.simulation_strength = state.simulation_strength
+        gv.invert_scroll_zoom = state.invert_scroll_zoom
         self.controller.save_settings()
 
     def _sync_raw_watcher(self) -> None:

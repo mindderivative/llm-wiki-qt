@@ -217,3 +217,29 @@ def test_graph_view_loads_a_legacy_null_filter_degrees(tmp_path: Path) -> None:
 
     assert settings.graph_view.filter_degrees == 1
     assert settings.graph_view.filter_types == ["concept"]
+
+
+def test_graph_view_display_settings_default_to_the_built_in_look() -> None:
+    settings = AppSettings.load(None)
+    gv = settings.graph_view
+    assert gv.type_colors == {}
+    assert gv.simulation_enabled is True
+    assert gv.simulation_strength == 1.0
+    assert gv.invert_scroll_zoom is False
+
+
+def test_graph_view_display_settings_round_trip_through_save(tmp_path: Path) -> None:
+    config_path = tmp_path / ".llm-wiki-config"
+    settings = AppSettings.load(None)
+    settings.graph_view.type_colors = {"concept": "#123456", "index": "#654321"}
+    settings.graph_view.simulation_enabled = False
+    settings.graph_view.simulation_strength = 1.75
+    settings.graph_view.invert_scroll_zoom = True
+
+    settings.save(config_path)
+    reloaded = AppSettings.load(config_path)
+
+    assert reloaded.graph_view.type_colors == {"concept": "#123456", "index": "#654321"}
+    assert reloaded.graph_view.simulation_enabled is False
+    assert reloaded.graph_view.simulation_strength == 1.75
+    assert reloaded.graph_view.invert_scroll_zoom is True

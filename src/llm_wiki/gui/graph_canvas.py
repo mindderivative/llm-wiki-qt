@@ -67,19 +67,54 @@ _SIM_SETTLE_MAX_TICKS = 90  # safety cap (~3s) so the loop always terminates
 # _layout_positions() and _simulation_tick().
 _GRAVITY_WELL_SLUG = "index"
 
-# Phase 24 -- Filters. Same type -> colour mapping dashboard_panel.py's
-# _NOTE_TYPES already uses, reused here (not redefined) for the type
-# checkboxes, so the same type reads as the same colour on both tabs.
-_FILTER_NOTE_TYPES = (
-    ("concept", "Concept", theme.STAGE_ATOMIZE),
-    ("entity", "Entity", theme.ACCENT),
-    ("source", "Source", theme.STAGE_LINK),
-    ("synthesis", "Synthesis", theme.STAGE_LINT),
+# Phase 24 -- Filters. Just the 4 real note types' keys/labels; their
+# *colors* moved to _DEFAULT_TYPE_COLORS below (Phase 25) once they
+# became user-customizable rather than fixed constants.
+_FILTER_NOTE_TYPE_LABELS = (
+    ("concept", "Concept"),
+    ("entity", "Entity"),
+    ("source", "Source"),
+    ("synthesis", "Synthesis"),
 )
 # difflib.SequenceMatcher ratio below which a search term doesn't count as
 # a loose match -- an exact substring always matches regardless (see
 # _fuzzy_match()); this only governs the genuinely-fuzzy fallback.
 _FUZZY_MATCH_THRESHOLD = 0.4
+
+# Phase 25 -- node colors, by real note `type` (replacing the old
+# hash-bucket "category" system, which had no relationship at all to a
+# note's actual type or to the Filters panel's own type colors -- see
+# GraphCanvas._node_color()). Defaults match the pre-Phase-25 Filters
+# checkbox colors exactly, so the *look* of the 4 real types doesn't
+# change, only the mechanism -- and now the graph and Filters agree.
+_DEFAULT_TYPE_COLORS: dict[str, str] = {
+    "concept": theme.STAGE_ATOMIZE,
+    "entity": theme.ACCENT,
+    "source": theme.STAGE_LINK,
+    "synthesis": theme.STAGE_LINT,
+    # The gravity well is never a real `notes` row -- no `type` of its
+    # own -- so it gets its own default: a muted neutral, distinct from
+    # the four vivid type colors and from theme.ACCENT (reserved for the
+    # current selection highlight).
+    _GRAVITY_WELL_SLUG: theme.TEXT_DIM,
+}
+# Preset choices offered by the Colors picker (Phase 25) -- a curated,
+# still-relevant set inherited from the old CATEGORY_COLORS hash-bucket
+# palette (now removed from theme.py, since nothing else used it) plus
+# the four colors already used as _DEFAULT_TYPE_COLORS' own defaults.
+_GRAPH_SWATCH_PALETTE: tuple[str, ...] = (
+    theme.STAGE_ATOMIZE,
+    theme.ACCENT,
+    theme.STAGE_LINK,
+    theme.STAGE_LINT,
+    theme.ERROR,
+    "#AD87ED",  # oklch(70% 0.15 300) -- was CATEGORY_COLORS["core"]
+    "#DA76BB",  # oklch(70% 0.15 340) -- was CATEGORY_COLORS["rendering"]
+    "#CE9200",  # oklch(70% 0.15 80) -- was CATEGORY_COLORS["physics"]
+    "#3BB974",  # oklch(70% 0.15 155) -- was CATEGORY_COLORS["editor"]
+    "#ED7665",  # oklch(70% 0.15 30) -- was CATEGORY_COLORS["multiplayer"]
+    theme.TEXT_DIM,
+)
 
 
 class GraphFilterState(NamedTuple):
@@ -105,6 +140,22 @@ class GraphFilterState(NamedTuple):
     degrees_enabled: bool
 
 
+class GraphDisplaySettings(NamedTuple):
+    """Bundles Colors/Physics/Zoom-Pan (Phase 25) in one payload -- the
+    same "on_*_changed fires this whole, set_*() accepts it whole" shape
+    `GraphFilterState` already established.
+    """
+
+    # Only the types the caller has actually customized -- GraphCanvas
+    # always merges this over _DEFAULT_TYPE_COLORS, never assigns it
+    # directly, so a config missing a key (an older save, or a future new
+    # type) falls back cleanly instead of a lookup ever raising.
+    type_colors: dict[str, str]
+    simulation_enabled: bool
+    simulation_strength: float
+    invert_scroll_zoom: bool
+
+
 def _fuzzy_match(query: str, text: str) -> bool:
     """A "loosely matching" search: always true for an empty query or a
     real substring hit; falls back to a similarity ratio for genuine
@@ -120,17 +171,6 @@ def _fuzzy_match(query: str, text: str) -> bool:
     return difflib.SequenceMatcher(None, query, text).ratio() >= _FUZZY_MATCH_THRESHOLD
 
 
-def _category_of(slug: str) -> str:
-    """Assigns a node a stable colour bucket.
-
-    The vault has no category concept -- notes are just slugs -- so this
-    spreads them deterministically across the mockup's palette instead of
-    inventing metadata the engine doesn't have.
-    """
-    categories = list(theme.CATEGORY_COLORS)
-    return categories[hash(slug) % len(categories)]
-
-
 class GraphCanvas(ft.Container):
     """Interactive canvas visualizing the vault's `[[wikilink]]` network."""
 
@@ -140,6 +180,7 @@ class GraphCanvas(ft.Container):
         on_node_selected=None,
         on_settings_panel_toggled=None,
         on_filters_changed=None,
+        on_display_settings_changed=None,
     ) -> None:
         super().__init__()
         self._page = page  # NOT self.page -- ft.Container reserves that name
@@ -156,7 +197,7 @@ class GraphCanvas(ft.Container):
         # from set_filters(), which syncs from persisted settings), same
         # split as on_settings_panel_toggled above.
         self.on_filters_changed = on_filters_changed
-        self._filter_types: set[str] = {t for t, _label, _color in _FILTER_NOTE_TYPES}
+        self._filter_types: set[str] = {t for t, _label in _FILTER_NOTE_TYPE_LABELS}
         self._filter_tags: set[str] = set()
         self._filter_search = ""
         self._filter_date_from: str | None = None
@@ -189,6 +230,18 @@ class GraphCanvas(ft.Container):
         self._date_picker_to = ft.DatePicker(
             on_change=lambda e: self._on_filter_date_to_changed(e.control.value)
         )
+
+        # Phase 25 -- Colors / Physics / Zoom & Pan. Fired only on a
+        # genuine user change (never from set_display_settings(), which
+        # syncs from persisted settings), same split as on_filters_changed.
+        self.on_display_settings_changed = on_display_settings_changed
+        # Always the full 5-key map (merged over _DEFAULT_TYPE_COLORS at
+        # every sync point -- see set_display_settings()) so a lookup
+        # never has to guard a missing key.
+        self._type_colors: dict[str, str] = dict(_DEFAULT_TYPE_COLORS)
+        self._simulation_enabled = True
+        self._simulation_strength = 1.0
+        self._invert_scroll_zoom = False
 
         self._graph = nx.DiGraph()
         self._positions: dict[str, tuple[float, float]] = {}
@@ -429,7 +482,17 @@ class GraphCanvas(ft.Container):
         """Called when a node-drag begins. Snapshots the pre-drag layout as
         the "home" every perturbed node eases back toward once released, and
         (re)starts the tick loop if it isn't already running.
+
+        Phase 25: a no-op when Physics/Animation's "Enable Simulation"
+        switch is off -- `self._sim_active` simply never becomes `True`,
+        so `_on_pan_update()`'s existing `if not self._sim_active:
+        self._redraw_all()` fallback (already there for "the tick loop
+        isn't running") takes over automatically: a disabled simulation
+        means a dragged node just moves directly, no other code path
+        needs to change.
         """
+        if not self._simulation_enabled:
+            return
         self._home_positions = dict(self._positions)
         self._sim_velocities = {}
         self._sim_active_nodes = set()
@@ -494,6 +557,12 @@ class GraphCanvas(ft.Container):
         else:
             self._sim_settle_ticks += 1
 
+        # Phase 25 -- Physics/Animation's Strength slider scales repel,
+        # trail-spring, and return-to-home forces together (not damping,
+        # the speed clamp, or the repel radius -- those would each turn
+        # this into a different-feeling knob rather than one intuitive
+        # "how strong" dial).
+        strength = self._simulation_strength
         still_active: set[str] = set()
         for slug in self._sim_active_nodes:
             if slug not in self._positions or slug not in self._home_positions:
@@ -507,16 +576,16 @@ class GraphCanvas(ft.Container):
                 dist = max(math.hypot(dx, dy), 1e-3)
                 if slug in neighbors:
                     stretch = dist - _SIM_NEIGHBOR_REST_LENGTH
-                    fx += -_SIM_NEIGHBOR_SPRING_K * stretch * dx / dist
-                    fy += -_SIM_NEIGHBOR_SPRING_K * stretch * dy / dist
+                    fx += -_SIM_NEIGHBOR_SPRING_K * strength * stretch * dx / dist
+                    fy += -_SIM_NEIGHBOR_SPRING_K * strength * stretch * dy / dist
                 if dist < _SIM_REPEL_RADIUS:
-                    push = _SIM_REPEL_STRENGTH * (1 - dist / _SIM_REPEL_RADIUS) / dist
+                    push = _SIM_REPEL_STRENGTH * strength * (1 - dist / _SIM_REPEL_RADIUS) / dist
                     fx += push * dx
                     fy += push * dy
 
             hx, hy = self._home_positions[slug]
-            fx += -_SIM_HOME_SPRING_K * (px - hx)
-            fy += -_SIM_HOME_SPRING_K * (py - hy)
+            fx += -_SIM_HOME_SPRING_K * strength * (px - hx)
+            fy += -_SIM_HOME_SPRING_K * strength * (py - hy)
 
             vx = (vx + fx * _SIM_TICK_DT) * _SIM_DAMPING
             vy = (vy + fy * _SIM_TICK_DT) * _SIM_DAMPING
@@ -666,8 +735,15 @@ class GraphCanvas(ft.Container):
         self._redraw_all()
 
     def _on_scroll(self, e: ft.ScrollEvent) -> None:
-        # Scroll up (negative dy) zooms in, matching maps/design-tool convention.
-        step = _SCROLL_ZOOM_STEP if e.scroll_delta.y < 0 else -_SCROLL_ZOOM_STEP
+        # Scroll up (negative dy) zooms in, matching maps/design-tool
+        # convention -- flipped when Zoom & Pan's Invert Scroll-Zoom
+        # switch (Phase 25) is on, for hardware/platforms where that
+        # convention feels backwards (flagged as worth confirming back in
+        # Phase 17, never had a real fix until now).
+        zoom_in = e.scroll_delta.y < 0
+        if self._invert_scroll_zoom:
+            zoom_in = not zoom_in
+        step = _SCROLL_ZOOM_STEP if zoom_in else -_SCROLL_ZOOM_STEP
         self._set_zoom(self._zoom + step, focal=(e.local_position.x, e.local_position.y))
 
     def _on_hover(self, e: ft.HoverEvent) -> None:
@@ -694,13 +770,27 @@ class GraphCanvas(ft.Container):
             slugs.add(self._dragging)
         return slugs
 
+    def _node_color(self, slug: str) -> str:
+        """Colored by the note's real `type` (Phase 25) -- customizable
+        via `self._type_colors`, which the Colors picker mutates. Falls
+        back to the gravity well's own neutral default for the hub itself
+        (never a real `notes` row, so it has no `type`) and for any note
+        with a missing/unrecognized type, rather than ever raising.
+        """
+        if slug == self._selected:
+            return theme.ACCENT
+        fallback = self._type_colors[_GRAVITY_WELL_SLUG]
+        if slug == _GRAVITY_WELL_SLUG:
+            return fallback
+        node_type = self._graph.nodes[slug].get("type") if slug in self._graph else None
+        return self._type_colors.get(node_type, fallback)
+
     def _node_circle(self, slug: str, x: float, y: float) -> cv.Circle:
-        color = (
-            theme.ACCENT if slug == self._selected else theme.CATEGORY_COLORS[_category_of(slug)]
-        )
         sx = x * self._zoom + self._pan_x
         sy = y * self._zoom + self._pan_y
-        return cv.Circle(sx, sy, _NODE_RADIUS * self._zoom, paint=ft.Paint(color=color))
+        return cv.Circle(
+            sx, sy, _NODE_RADIUS * self._zoom, paint=ft.Paint(color=self._node_color(slug))
+        )
 
     def _hover_label_shape(self, slug: str, x: float, y: float) -> cv.Text:
         sx = x * self._zoom + self._pan_x
@@ -875,6 +965,9 @@ class GraphCanvas(ft.Container):
                     ft.Container(height=1, bgcolor=theme.BORDER),
                     self._section_label("FILTERS"),
                     self._build_filters_section(),
+                    ft.Container(height=1, bgcolor=theme.BORDER),
+                    self._section_label("DISPLAY"),
+                    self._build_display_settings_section(),
                 ],
             ),
         )
@@ -893,19 +986,75 @@ class GraphCanvas(ft.Container):
         return ft.Text(text, size=11, color=theme.TEXT_MUTED, weight=ft.FontWeight.W_500)
 
     def _build_legend_section(self) -> ft.Control:
-        return ft.Column(
-            spacing=5,
+        """Phase 25: an interactive color picker per real note type (plus
+        `index`, the gravity-well hub) -- replacing, not supplementing,
+        the old static legend. A separate parallel "Colors" section
+        listing the same 4-5 things a second time would be redundant with
+        the legend already sitting right here.
+        """
+        self._color_swatch_controls: dict[str, ft.Container] = {}
+        rows = [
+            self._build_color_picker_row(type_key, label)
+            for type_key, label in (*_FILTER_NOTE_TYPE_LABELS, (_GRAVITY_WELL_SLUG, "Index"))
+        ]
+        return ft.Column(spacing=5, controls=rows)
+
+    def _build_color_picker_row(self, type_key: str, label: str) -> ft.Control:
+        """A `PopupMenuButton` wrapping a `Row(wrap=True)` of clickable
+        preset swatches inside a single `PopupMenuItem` -- deliberately
+        *not* one `PopupMenuItem` per preset. The former doesn't
+        auto-close on a click into a plain nested `Container` (proven by
+        the Tags popup, Post-24 fix #3); the latter would, via Flutter's
+        own built-in "close menu on item selection." Not auto-closing is
+        the point here too: it lets you preview a couple of colors
+        against the live graph before settling on one.
+        """
+        trigger_swatch = ft.Container(
+            width=8, height=8, border_radius=4, bgcolor=self._type_colors[type_key]
+        )
+        self._color_swatch_controls[type_key] = trigger_swatch
+        palette = ft.Row(
+            wrap=True,
+            spacing=6,
+            run_spacing=6,
             controls=[
-                ft.Row(
-                    spacing=7,
-                    controls=[
-                        ft.Container(width=8, height=8, bgcolor=color, border_radius=4),
-                        ft.Text(name.title(), size=10.5, color=theme.TEXT_TOGGLE_OFF),
-                    ],
+                ft.Container(
+                    width=18,
+                    height=18,
+                    border_radius=4,
+                    bgcolor=color,
+                    border=ft.Border.all(1, theme.BORDER_STRONG),
+                    on_click=lambda e, t=type_key, c=color: self._on_type_color_selected(t, c),
                 )
-                for name, color in theme.CATEGORY_COLORS.items()
+                for color in _GRAPH_SWATCH_PALETTE
             ],
         )
+        return ft.PopupMenuButton(
+            menu_padding=ft.Padding(8, 8, 8, 8),
+            content=ft.Row(
+                spacing=7,
+                controls=[trigger_swatch, ft.Text(label, size=10.5, color=theme.TEXT_TOGGLE_OFF)],
+            ),
+            items=[ft.PopupMenuItem(content=ft.Container(width=190, content=palette))],
+        )
+
+    def _on_type_color_selected(self, type_key: str, color: str) -> None:
+        self._type_colors[type_key] = color
+        swatch = self._color_swatch_controls.get(type_key)
+        if swatch is not None:
+            swatch.bgcolor = color
+            with contextlib.suppress(RuntimeError):
+                swatch.update()
+        # The Type filter checkbox for this type (if it's one of the 4
+        # real types, not "index") shares the same color -- kept in sync
+        # the same way a tag chip's own container is (mutate just this
+        # one control, never rebuild anything around it).
+        checkbox = self._type_checkboxes.get(type_key)
+        if checkbox is not None:
+            checkbox.fill_color = color
+            with contextlib.suppress(RuntimeError):
+                checkbox.update()
+        self._apply_display_settings_change()
 
     # --- Filters (Phase 24, redesigned Post-24 fix #3) -------------------------
     #
@@ -1020,10 +1169,10 @@ class GraphCanvas(ft.Container):
     def _build_type_content(self) -> ft.Control:
         self._type_checkboxes = {}
         rows = []
-        for type_key, label, color in _FILTER_NOTE_TYPES:
+        for type_key, label in _FILTER_NOTE_TYPE_LABELS:
             checkbox = ft.Checkbox(
                 value=type_key in self._filter_types,
-                fill_color=color,
+                fill_color=self._type_colors[type_key],
                 on_change=(
                     lambda e, t=type_key: self._on_filter_type_changed(t, e.control.value)
                 ),
@@ -1231,6 +1380,164 @@ class GraphCanvas(ft.Container):
             self._date_switch.update()
             self._degrees_switch.update()
 
+    # --- Display settings (Phase 25: Physics/Animation, Zoom & Pan) ------------
+
+    def _build_settings_section_box(self, title: str, content: ft.Control) -> ft.Control:
+        """A simpler sibling to `_build_filter_section_box()` -- same
+        bordered/labeled shape, minus the per-section enable `Switch`:
+        neither Physics/Animation nor Zoom & Pan has an "enable this
+        whole dimension" concept the way a Filter does (Physics's own
+        "Enable Simulation" switch already lives *inside* its content).
+        """
+        return ft.Container(
+            padding=ft.Padding(8, 6, 8, 6),
+            bgcolor=theme.CARD_BG,
+            border=ft.Border.all(1, theme.BORDER),
+            border_radius=6,
+            content=ft.Column(
+                spacing=6,
+                controls=[
+                    ft.Text(title, size=10.5, weight=ft.FontWeight.W_600, color=theme.TEXT),
+                    content,
+                ],
+            ),
+        )
+
+    def _simulation_strength_caption_text(self) -> str:
+        return f"Strength: {self._simulation_strength:.2f}x"
+
+    def _build_physics_content(self) -> ft.Control:
+        self._simulation_switch = ft.Switch(
+            value=self._simulation_enabled,
+            on_change=lambda e: self._on_simulation_enabled_toggled(e.control.value),
+        )
+        self._simulation_strength_caption = ft.Text(
+            self._simulation_strength_caption_text(), size=10, color=theme.TEXT_MUTED
+        )
+        self._simulation_strength_slider = ft.Slider(
+            min=0.25,
+            max=2.5,
+            divisions=9,
+            value=self._simulation_strength,
+            label="{value}",
+            on_change=(
+                lambda e: self._on_simulation_strength_changed(round(e.control.value, 2))
+            ),
+        )
+        return ft.Column(
+            spacing=6,
+            controls=[
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    controls=[
+                        ft.Text("Enable Simulation", size=10.5, color=theme.TEXT_TOGGLE_OFF),
+                        self._simulation_switch,
+                    ],
+                ),
+                self._simulation_strength_caption,
+                self._simulation_strength_slider,
+            ],
+        )
+
+    def _build_zoom_pan_content(self) -> ft.Control:
+        self._invert_scroll_switch = ft.Switch(
+            value=self._invert_scroll_zoom,
+            on_change=lambda e: self._on_invert_scroll_toggled(e.control.value),
+        )
+        return ft.Row(
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            controls=[
+                ft.Text("Invert Scroll-Zoom", size=10.5, color=theme.TEXT_TOGGLE_OFF),
+                self._invert_scroll_switch,
+            ],
+        )
+
+    def _build_display_settings_section(self) -> ft.Control:
+        return ft.Column(
+            spacing=8,
+            controls=[
+                self._build_settings_section_box(
+                    "Physics / Animation", self._build_physics_content()
+                ),
+                self._build_settings_section_box("Zoom & Pan", self._build_zoom_pan_content()),
+            ],
+        )
+
+    def _current_display_settings(self) -> GraphDisplaySettings:
+        return GraphDisplaySettings(
+            type_colors=dict(self._type_colors),
+            simulation_enabled=self._simulation_enabled,
+            simulation_strength=self._simulation_strength,
+            invert_scroll_zoom=self._invert_scroll_zoom,
+        )
+
+    def _apply_display_settings_change(self) -> None:
+        """Common tail for every Colors/Physics/Zoom-Pan control's own
+        handler -- mirrors `_apply_filter_change()` exactly.
+        """
+        self._redraw_all()
+        if self.on_display_settings_changed is not None:
+            self.on_display_settings_changed(self._current_display_settings())
+
+    def _on_simulation_enabled_toggled(self, enabled: bool) -> None:
+        self._simulation_enabled = enabled
+        self._apply_display_settings_change()
+
+    def _on_simulation_strength_changed(self, value: float) -> None:
+        self._simulation_strength = value
+        self._simulation_strength_caption.value = self._simulation_strength_caption_text()
+        with contextlib.suppress(RuntimeError):
+            self._simulation_strength_caption.update()
+        self._apply_display_settings_change()
+
+    def _on_invert_scroll_toggled(self, enabled: bool) -> None:
+        self._invert_scroll_zoom = enabled
+        self._apply_display_settings_change()
+
+    def _sync_display_controls_to_state(self) -> None:
+        """Mutates every stored Colors/Physics/Zoom-Pan control from
+        current state -- used only by `set_display_settings()`, same
+        "bulk sync mutates, never rebuilds" rule
+        `_sync_filter_controls_to_state()` established.
+        """
+        for type_key, swatch in self._color_swatch_controls.items():
+            swatch.bgcolor = self._type_colors[type_key]
+            with contextlib.suppress(RuntimeError):
+                swatch.update()
+        for type_key, checkbox in self._type_checkboxes.items():
+            checkbox.fill_color = self._type_colors[type_key]
+            with contextlib.suppress(RuntimeError):
+                checkbox.update()
+        self._simulation_switch.value = self._simulation_enabled
+        self._simulation_strength_slider.value = self._simulation_strength
+        self._simulation_strength_caption.value = self._simulation_strength_caption_text()
+        with contextlib.suppress(RuntimeError):
+            self._simulation_switch.update()
+            self._simulation_strength_slider.update()
+            self._simulation_strength_caption.update()
+        self._invert_scroll_switch.value = self._invert_scroll_zoom
+        with contextlib.suppress(RuntimeError):
+            self._invert_scroll_switch.update()
+
+    def set_display_settings(self, state: GraphDisplaySettings) -> None:
+        """Syncs Colors/Physics/Zoom-Pan from persisted settings -- called
+        once after construction and again on every vault switch. Never
+        fires `on_display_settings_changed`; that's only for genuine user
+        changes.
+        """
+        if state == self._current_display_settings():
+            return
+        # Merges over the built-in defaults rather than assigning
+        # directly -- a persisted config missing a key (an older save, or
+        # a future new type) must never leave a lookup elsewhere without
+        # an entry to fall back on.
+        self._type_colors = {**_DEFAULT_TYPE_COLORS, **state.type_colors}
+        self._simulation_enabled = state.simulation_enabled
+        self._simulation_strength = state.simulation_strength
+        self._invert_scroll_zoom = state.invert_scroll_zoom
+        self._sync_display_controls_to_state()
+        self._redraw_all()
+
     def _toggle_settings_panel(self, e=None) -> None:
         self._settings_panel_expanded = not self._settings_panel_expanded
         self._apply_panel_expanded_state()
@@ -1378,7 +1685,7 @@ class GraphCanvas(ft.Container):
         self._apply_filter_change()
 
     def _on_filters_reset(self, e=None) -> None:
-        self._filter_types = {t for t, _label, _color in _FILTER_NOTE_TYPES}
+        self._filter_types = {t for t, _label in _FILTER_NOTE_TYPE_LABELS}
         self._filter_tags = set()
         self._filter_search = ""
         self._filter_date_from = None

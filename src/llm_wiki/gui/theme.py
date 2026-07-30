@@ -60,17 +60,5 @@ STAGE_ATOMIZE = "#00B2DE"  # oklch(70% 0.15 220)
 STAGE_LINK = "#35C177"  # oklch(72% 0.16 155)
 STAGE_LINT = "#DFA11A"  # oklch(75% 0.15 80)
 
-# Graph node categories.
-CATEGORY_COLORS = {
-    "core": "#AD87ED",  # oklch(70% 0.15 300)
-    "scripting": "#00B2DE",  # oklch(70% 0.15 220)
-    "rendering": "#DA76BB",  # oklch(70% 0.15 340)
-    "physics": "#CE9200",  # oklch(70% 0.15 80)
-    "editor": "#3BB974",  # oklch(70% 0.15 155)
-    "multiplayer": "#ED7665",  # oklch(70% 0.15 30)
-}
-DEFAULT_CATEGORY = "core"
-
-
 def build_theme() -> ft.Theme:
     return ft.Theme(color_scheme=ft.ColorScheme(primary=ACCENT, surface=APP_BG, error=ERROR))

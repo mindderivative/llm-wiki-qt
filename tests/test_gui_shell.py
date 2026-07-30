@@ -35,7 +35,7 @@ from llm_wiki.gui.dialogs import (
     build_settings_dialog,
 )
 from llm_wiki.gui.dock import DockArea
-from llm_wiki.gui.graph_canvas import GraphCanvas, GraphFilterState
+from llm_wiki.gui.graph_canvas import GraphCanvas, GraphDisplaySettings, GraphFilterState
 from llm_wiki.gui.health_panel import HealthPanel
 from llm_wiki.gui.menu import build_menu_bar
 from llm_wiki.gui.splitter import ResizeHandle
@@ -81,16 +81,22 @@ def test_every_palette_colour_is_a_valid_hex_string() -> None:
     colours = {
         name: value
         for name, value in vars(theme).items()
-        if name.isupper() and isinstance(value, str) and name != "DEFAULT_CATEGORY"
+        if name.isupper() and isinstance(value, str)
     }
     assert colours, "expected the palette module to expose colour constants"
     for name, value in colours.items():
         assert re.fullmatch(r"#[0-9A-F]{6}", value), f"{name}={value}"
 
 
-def test_category_colours_cover_the_mockups_six_buckets() -> None:
-    assert len(theme.CATEGORY_COLORS) == 6
-    assert theme.DEFAULT_CATEGORY in theme.CATEGORY_COLORS
+def test_graph_swatch_palette_is_a_nonempty_tuple_of_valid_hex_colours() -> None:
+    """`_GRAPH_SWATCH_PALETTE` (Phase 25) is a tuple, not a string constant
+    -- `test_every_palette_colour_is_a_valid_hex_string()` only scans
+    theme.py's string constants, so this needs its own check.
+    """
+    palette = graph_canvas._GRAPH_SWATCH_PALETTE
+    assert palette
+    for color in palette:
+        assert re.fullmatch(r"#[0-9A-F]{6}", color), color
 
 
 # --- AppController ----------------------------------------------------
@@ -1000,6 +1006,156 @@ def test_set_filters_is_a_no_op_for_an_unchanged_state() -> None:
     canvas.set_filters(state)
 
     assert canvas._settings_panel.content is panel_content_before
+
+
+# --- Colors (Phase 25) -----------------------------------------------------
+
+
+def test_default_type_colors_match_the_old_filter_defaults_plus_index() -> None:
+    canvas = GraphCanvas(_page_stub())
+
+    assert canvas._type_colors["concept"] == theme.STAGE_ATOMIZE
+    assert canvas._type_colors["entity"] == theme.ACCENT
+    assert canvas._type_colors["source"] == theme.STAGE_LINK
+    assert canvas._type_colors["synthesis"] == theme.STAGE_LINT
+    assert canvas._type_colors["index"] == theme.TEXT_DIM
+
+
+def test_selecting_a_type_color_updates_the_nodes_paint_colour() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = nx.DiGraph()
+    canvas._graph.add_node("note-a", type="concept")
+    canvas._graph.add_node("index")
+
+    canvas._on_type_color_selected("concept", "#123456")
+    assert canvas._node_color("note-a") == "#123456"
+
+    canvas._on_type_color_selected("index", "#654321")
+    assert canvas._node_color("index") == "#654321"
+
+
+def test_selecting_a_type_color_mutates_only_that_types_checkbox() -> None:
+    """Post-24 fix #3's discipline extends to Colors too: a color change
+    must mutate only the affected checkbox's `fill_color` and never
+    reassign `_settings_panel.content`.
+    """
+    canvas = GraphCanvas(_page_stub())
+    panel_content_before = canvas._settings_panel.content
+    other_fill_before = canvas._type_checkboxes["entity"].fill_color
+
+    canvas._on_type_color_selected("concept", "#123456")
+
+    assert canvas._settings_panel.content is panel_content_before
+    assert canvas._type_checkboxes["concept"].fill_color == "#123456"
+    assert canvas._type_checkboxes["entity"].fill_color == other_fill_before
+    assert canvas._color_swatch_controls["concept"].bgcolor == "#123456"
+
+
+def test_node_with_missing_type_falls_back_to_the_index_colour() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = nx.DiGraph()
+    canvas._graph.add_node("mystery")  # no `type` attribute at all
+
+    assert canvas._node_color("mystery") == canvas._type_colors["index"]
+
+
+# --- Physics / Animation, Zoom & Pan (Phase 25) -----------------------------
+
+
+def test_disabling_simulation_means_a_drag_moves_the_node_directly() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = _fixture_graph()
+    canvas._compute_layout()
+    canvas._simulation_enabled = False
+    slug, (x, y) = next(iter(canvas.node_positions.items()))
+
+    _pan_start_at(canvas, x, y)
+
+    assert canvas._sim_active is False
+
+    _pan_update_to(canvas, x + 40, y + 25, 40, 25)
+
+    assert canvas.node_positions[slug] != (x, y)
+
+
+def test_simulation_strength_scales_the_tick_forces() -> None:
+    default_canvas = _simulation_canvas()
+    _pan_start_at(default_canvas, 400.0, 300.0)
+    _pan_update_to(default_canvas, 500.0, 300.0, dx=100.0, dy=0.0)
+    for _ in range(5):
+        default_canvas._simulation_tick()
+    default_displacement = math.dist(
+        default_canvas._positions["bystander"], (430.0, 300.0)
+    )
+
+    strong_canvas = _simulation_canvas()
+    strong_canvas._simulation_strength = 2.0
+    _pan_start_at(strong_canvas, 400.0, 300.0)
+    _pan_update_to(strong_canvas, 500.0, 300.0, dx=100.0, dy=0.0)
+    for _ in range(5):
+        strong_canvas._simulation_tick()
+    strong_displacement = math.dist(strong_canvas._positions["bystander"], (430.0, 300.0))
+
+    assert strong_displacement > default_displacement
+
+
+def test_invert_scroll_zoom_flips_the_wheel_direction() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._invert_scroll_zoom = True
+    start_zoom = canvas.zoom
+
+    canvas._on_scroll(
+        ft.ScrollEvent(
+            name="scroll",
+            control=canvas,
+            data=None,
+            local_position=ft.Offset(100, 100),
+            global_position=ft.Offset(100, 100),
+            scroll_delta=ft.Offset(0, -120),  # wheel up -- now zooms OUT
+        )
+    )
+
+    assert canvas.zoom < start_zoom
+
+
+# --- Display settings sync (Phase 25) ---------------------------------------
+
+
+def test_set_display_settings_is_a_no_op_for_an_unchanged_state() -> None:
+    canvas = GraphCanvas(_page_stub())
+    state = canvas._current_display_settings()
+    panel_content_before = canvas._settings_panel.content
+
+    canvas.set_display_settings(state)
+
+    assert canvas._settings_panel.content is panel_content_before
+
+
+def test_set_display_settings_merges_partial_type_colors_over_defaults() -> None:
+    seen: list[GraphDisplaySettings] = []
+    canvas = GraphCanvas(_page_stub(), on_display_settings_changed=seen.append)
+
+    canvas.set_display_settings(
+        GraphDisplaySettings(
+            type_colors={"concept": "#123456"},
+            simulation_enabled=False,
+            simulation_strength=1.5,
+            invert_scroll_zoom=True,
+        )
+    )
+
+    assert canvas._type_colors["concept"] == "#123456"
+    assert canvas._type_colors["entity"] == theme.ACCENT  # untouched, from defaults
+    assert canvas._type_colors["index"] == theme.TEXT_DIM  # untouched, from defaults
+    assert canvas._simulation_enabled is False
+    assert canvas._simulation_strength == 1.5
+    assert canvas._invert_scroll_zoom is True
+    assert seen == []  # syncing from settings is not a user change
+    # Controls sync too, same discipline set_filters()/_on_filters_reset() use.
+    assert canvas._color_swatch_controls["concept"].bgcolor == "#123456"
+    assert canvas._simulation_switch.value is False
+    assert canvas._simulation_strength_slider.value == 1.5
+    assert canvas._invert_scroll_switch.value is True
 
 
 def test_selecting_a_node_shows_the_info_overlay() -> None:

@@ -22,7 +22,7 @@ import pytest
 from llm_wiki.config import AppSettings
 from llm_wiki.gui.app import Shell
 from llm_wiki.gui.app_controller import AppController
-from llm_wiki.gui.graph_canvas import GraphFilterState
+from llm_wiki.gui.graph_canvas import GraphDisplaySettings, GraphFilterState
 from llm_wiki.gui.pipeline_adapter import PipelineAdapter
 from llm_wiki.gui.toolbar import Toolbar
 from llm_wiki.ingest import enqueue_file, get_queue_item
@@ -405,6 +405,48 @@ def test_graph_filters_changed_persists_when_a_vault_is_open(page, vault_root: P
         assert reloaded.graph_view.filter_types == ["concept", "entity"]
         assert reloaded.graph_view.filter_degrees == 2
         assert reloaded.graph_view.filters_enabled is False
+    finally:
+        shell.raw_watcher.stop()  # opening the vault started it (auto_watch_raw defaults on)
+
+
+def test_graph_display_settings_changed_is_a_no_op_without_a_vault(page):
+    shell = Shell(page)
+    state = GraphDisplaySettings(
+        type_colors={"concept": "#123456"},
+        simulation_enabled=False,
+        simulation_strength=1.5,
+        invert_scroll_zoom=True,
+    )
+
+    shell._on_graph_display_settings_changed(state)  # must not raise
+
+    assert shell.controller.settings.graph_view.type_colors == {}
+    assert shell.controller.settings.graph_view.simulation_enabled is True
+
+
+def test_graph_display_settings_changed_persists_when_a_vault_is_open(page, vault_root: Path):
+    shell = Shell(page)
+    state = GraphDisplaySettings(
+        type_colors={"concept": "#123456", "index": "#654321"},
+        simulation_enabled=False,
+        simulation_strength=1.75,
+        invert_scroll_zoom=True,
+    )
+
+    try:
+        _on_loop(page, shell.controller.open_vault, vault_root)
+
+        shell._on_graph_display_settings_changed(state)
+
+        gv = shell.controller.settings.graph_view
+        assert gv.type_colors == {"concept": "#123456", "index": "#654321"}
+        assert gv.simulation_enabled is False
+        assert gv.simulation_strength == 1.75
+        assert gv.invert_scroll_zoom is True
+
+        reloaded = AppSettings.load(vault_root / ".llm-wiki-config")
+        assert reloaded.graph_view.type_colors == {"concept": "#123456", "index": "#654321"}
+        assert reloaded.graph_view.simulation_strength == 1.75
     finally:
         shell.raw_watcher.stop()  # opening the vault started it (auto_watch_raw defaults on)
 

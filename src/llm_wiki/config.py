@@ -113,6 +113,19 @@ class GraphViewConfig(BaseModel):
     # must start off.
     filter_degrees_enabled: bool = False
 
+    # Phase 25 -- Colors / Physics / Zoom & Pan. type_colors stores only
+    # what's actually been customized (an empty dict, the default, means
+    # "use the built-in defaults") -- GraphCanvas always merges this over
+    # its own defaults rather than assigning it directly, so a config
+    # missing a key (an older save, or a future new type) falls back
+    # cleanly. Deliberately not pre-filled with hex values here, which
+    # would duplicate them outside gui/theme.py and gui/graph_canvas.py
+    # and go stale if either ever changes.
+    type_colors: dict[str, str] = Field(default_factory=dict)
+    simulation_enabled: bool = True
+    simulation_strength: float = 1.0
+    invert_scroll_zoom: bool = False
+
 
 class AppSettings(BaseSettings):
     """Top-level application configuration; construct via `AppSettings.load()`."""
