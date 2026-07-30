@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     JsonConfigSettingsSource,
@@ -86,6 +86,16 @@ class GraphViewConfig(BaseModel):
     # filter_degrees_enabled=False, not a None/0 sentinel, since the
     # slider itself is always interactive (see graph_canvas.py).
     filter_degrees: int = 1
+
+    @field_validator("filter_degrees", mode="before")
+    @classmethod
+    def _coerce_legacy_null_degrees(cls, value: object) -> object:
+        """A `.llm-wiki-config` saved before this field became non-optional
+        may still have `null` on disk (its old default) -- without this,
+        loading that file raises a pydantic validation error and the vault
+        can't be opened at all. Treat `null` the same as an omitted key.
+        """
+        return 1 if value is None else value
 
     # Post-24 fix -- one enable switch per filter dimension, plus a master.
     # All default True, matching the pre-Post-24 always-on behavior --

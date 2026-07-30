@@ -199,3 +199,21 @@ def test_graph_view_filters_round_trip_through_save(tmp_path: Path) -> None:
     assert reloaded.graph_view.filter_degrees == 2
     assert reloaded.graph_view.filters_enabled is False
     assert reloaded.graph_view.filter_degrees_enabled is True
+
+
+def test_graph_view_loads_a_legacy_null_filter_degrees(tmp_path: Path) -> None:
+    """Regression: a `.llm-wiki-config` saved before filter_degrees became
+    a non-optional int (Post-24 fix) still has `null` on disk, its old
+    default -- that used to raise a pydantic validation error and block
+    opening the vault entirely.
+    """
+    config_path = tmp_path / ".llm-wiki-config"
+    config_path.write_text(
+        json.dumps({"graph_view": {"filter_degrees": None, "filter_types": ["concept"]}}),
+        encoding="utf-8",
+    )
+
+    settings = AppSettings.load(config_path)
+
+    assert settings.graph_view.filter_degrees == 1
+    assert settings.graph_view.filter_types == ["concept"]
