@@ -58,6 +58,13 @@ _SIM_MAX_SPEED = 900.0  # px/sec, hard clamp -- guarantees stability
 _SIM_SETTLE_DIST_EPSILON = 2.0  # px; below this + anchor released = at rest
 _SIM_SETTLE_MAX_TICKS = 90  # safety cap (~3s) so the loop always terminates
 
+# Post-22 fix -- every note is guaranteed to backlink to [[index]] (Phase
+# 18's Related-block), so it's structurally the hub of this graph. Pinning
+# it at the canvas center keeps the graph organized and stops it from
+# being dragged around by every other node's movement -- see
+# _layout_positions() and _simulation_tick().
+_GRAVITY_WELL_SLUG = "index"
+
 
 def _category_of(slug: str) -> str:
     """Assigns a node a stable colour bucket.
@@ -90,6 +97,9 @@ class GraphCanvas(ft.Container):
         self._dragging: str | None = None
         self._panning = False
         self._selected: str | None = None
+        # Post-22 fix -- a node's label only renders while the mouse is
+        # over it; see _on_hover()/_on_exit().
+        self._hovered: str | None = None
 
         # Phase 22 -- live local force simulation state.
         self._home_positions: dict[str, tuple[float, float]] = {}
@@ -108,8 +118,14 @@ class GraphCanvas(ft.Container):
         # in the same Stack, so they always share the same rendered size.
         self._static_canvas = cv.Canvas(shapes=[], expand=True, on_resize=self._on_resize)
         self._dynamic_canvas = cv.Canvas(shapes=[], expand=True)
+        # Topmost layer (Post-22 fix): holds at most one label, for
+        # whichever node the mouse is currently over -- see
+        # _build_hover_shapes(). Kept separate from static/dynamic so
+        # hover never has to rebuild the graph's actual node/edge shapes.
+        self._hover_canvas = cv.Canvas(shapes=[], expand=True)
         self._canvas_layers = ft.Stack(
-            controls=[self._static_canvas, self._dynamic_canvas], expand=True
+            controls=[self._static_canvas, self._dynamic_canvas, self._hover_canvas],
+            expand=True,
         )
         self._gestures = ft.GestureDetector(
             content=self._canvas_layers,
@@ -118,6 +134,8 @@ class GraphCanvas(ft.Container):
             on_pan_update=self._on_pan_update,
             on_pan_end=self._on_pan_end,
             on_scroll=self._on_scroll,
+            on_hover=self._on_hover,
+            on_exit=self._on_exit,
         )
         self._info_overlay = self._build_info_overlay()
         self.content = ft.Stack(
@@ -163,7 +181,18 @@ class GraphCanvas(ft.Container):
         # and always too tight for a small vault, leaving everything
         # clustered on top of each other regardless of graph size.
         k = _LAYOUT_SPACING / (node_count**0.5)
-        pos = nx.spring_layout(self._graph, k=k, iterations=100, seed=42)
+        pos_seed = None
+        fixed = None
+        if _GRAVITY_WELL_SLUG in self._graph:
+            # Anchors the hub every note backlinks to at the canvas center
+            # -- the rest of the graph settles into a rough ring around it
+            # from spring_layout's own attraction/repulsion balance, no
+            # explicit circular-placement math needed. A partial pos= (just
+            # the fixed node) is enough -- every other node still gets
+            # spring_layout's own random init.
+            pos_seed = {_GRAVITY_WELL_SLUG: (0.0, 0.0)}
+            fixed = [_GRAVITY_WELL_SLUG]
+        pos = nx.spring_layout(self._graph, k=k, iterations=100, seed=42, pos=pos_seed, fixed=fixed)
         return {str(node): self._to_canvas(float(xy[0]), float(xy[1])) for node, xy in pos.items()}
 
     def _compute_layout(self) -> None:
@@ -311,10 +340,16 @@ class GraphCanvas(ft.Container):
         anchor_pos = self._positions.get(anchor) if anchor is not None else None
         if anchor is not None:
             self._sim_settle_ticks = 0
-            self._sim_active_nodes |= neighbors & self._home_positions.keys()
+            # The gravity well never gets pulled by anything except being
+            # directly dragged -- excluded here, not from `neighbors`
+            # itself, so dragging it still moves its (unfiltered) neighbor
+            # set exactly like any other node would.
+            self._sim_active_nodes |= (
+                neighbors & self._home_positions.keys()
+            ) - {_GRAVITY_WELL_SLUG}
             if anchor_pos is not None:
                 for slug, pos in self._positions.items():
-                    if slug == anchor or slug not in self._home_positions:
+                    if slug in (anchor, _GRAVITY_WELL_SLUG) or slug not in self._home_positions:
                         continue
                     if math.dist(pos, anchor_pos) < _SIM_REPEL_RADIUS:
                         self._sim_active_nodes.add(slug)
@@ -408,12 +443,23 @@ class GraphCanvas(ft.Container):
         step = _SCROLL_ZOOM_STEP if e.scroll_delta.y < 0 else -_SCROLL_ZOOM_STEP
         self._set_zoom(self._zoom + step, focal=(e.local_position.x, e.local_position.y))
 
+    def _on_hover(self, e: ft.HoverEvent) -> None:
+        hovered = self._node_at(e.local_position.x, e.local_position.y)
+        if hovered != self._hovered:
+            self._hovered = hovered
+            self._redraw_hover()
+
+    def _on_exit(self, e: ft.HoverEvent) -> None:
+        if self._hovered is not None:
+            self._hovered = None
+            self._redraw_hover()
+
     # --- Drawing ------------------------------------------------------------
 
     def _dynamic_slugs(self) -> set[str]:
         """Nodes rendered on the dynamic canvas: the actively-simulated set
-        plus the node currently under the cursor, if any -- see the
-        Post-22 static/dynamic split for why this needs to stay a live
+        plus the node currently being dragged, if any -- see the Post-22
+        static/dynamic split for why this needs to stay a live
         computation, not a cached one.
         """
         slugs = set(self._sim_active_nodes)
@@ -421,22 +467,24 @@ class GraphCanvas(ft.Container):
             slugs.add(self._dragging)
         return slugs
 
-    def _node_shape(self, slug: str, x: float, y: float) -> list[cv.Shape]:
+    def _node_circle(self, slug: str, x: float, y: float) -> cv.Circle:
         color = (
             theme.ACCENT if slug == self._selected else theme.CATEGORY_COLORS[_category_of(slug)]
         )
         sx = x * self._zoom + self._pan_x
         sy = y * self._zoom + self._pan_y
-        return [
-            cv.Circle(sx, sy, _NODE_RADIUS * self._zoom, paint=ft.Paint(color=color)),
-            cv.Text(
-                sx,
-                sy + _NODE_RADIUS * self._zoom + 3,
-                slug,
-                style=ft.TextStyle(size=10.5, color=theme.TEXT_NODE),
-                alignment=ft.Alignment.TOP_CENTER,
-            ),
-        ]
+        return cv.Circle(sx, sy, _NODE_RADIUS * self._zoom, paint=ft.Paint(color=color))
+
+    def _hover_label_shape(self, slug: str, x: float, y: float) -> cv.Text:
+        sx = x * self._zoom + self._pan_x
+        sy = y * self._zoom + self._pan_y
+        return cv.Text(
+            sx,
+            sy + _NODE_RADIUS * self._zoom + 3,
+            slug,
+            style=ft.TextStyle(size=10.5, color=theme.TEXT_NODE),
+            alignment=ft.Alignment.TOP_CENTER,
+        )
 
     def _edge_shape(self, u: str, v: str, edge_paint: ft.Paint) -> cv.Shape | None:
         if u not in self._positions or v not in self._positions:
@@ -468,7 +516,7 @@ class GraphCanvas(ft.Container):
         for slug, (x, y) in self._positions.items():
             if slug in dynamic:
                 continue
-            shapes.extend(self._node_shape(slug, x, y))
+            shapes.append(self._node_circle(slug, x, y))
         return shapes
 
     def _build_dynamic_shapes(self) -> list[cv.Shape]:
@@ -487,7 +535,7 @@ class GraphCanvas(ft.Container):
         for slug in dynamic:
             pos = self._positions.get(slug)
             if pos is not None:
-                shapes.extend(self._node_shape(slug, *pos))
+                shapes.append(self._node_circle(slug, *pos))
         return shapes
 
     def build_shapes(self) -> list[cv.Shape]:
@@ -511,6 +559,22 @@ class GraphCanvas(ft.Container):
     def _redraw_all(self) -> None:
         self._redraw_static()
         self._redraw_dynamic()
+
+    def _build_hover_shapes(self) -> list[cv.Shape]:
+        """At most one label -- whichever node the mouse is currently
+        over, if any and it still has a live position.
+        """
+        if self._hovered is None:
+            return []
+        pos = self._positions.get(self._hovered)
+        if pos is None:
+            return []
+        return [self._hover_label_shape(self._hovered, *pos)]
+
+    def _redraw_hover(self) -> None:
+        self._hover_canvas.shapes = self._build_hover_shapes()
+        with contextlib.suppress(RuntimeError):
+            self._hover_canvas.update()
 
     def _build_legend(self) -> ft.Control:
         return ft.Container(

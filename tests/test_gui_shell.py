@@ -278,6 +278,39 @@ def _pan_end(canvas: GraphCanvas) -> None:
     )
 
 
+def _hover_event(canvas: GraphCanvas, x: float, y: float) -> ft.HoverEvent:
+    return ft.HoverEvent(
+        name="hover",
+        control=canvas,
+        data=None,
+        kind=ft.PointerDeviceType.MOUSE,
+        local_position=ft.Offset(x, y),
+        global_position=ft.Offset(x, y),
+        timestamp=0,
+        device=0.0,
+        pressure=1.0,
+        pressure_min=1.0,
+        pressure_max=1.0,
+        distance=0.0,
+        distance_max=0.0,
+        size=0.0,
+        radius_major=0.0,
+        radius_minor=0.0,
+        radius_min=0.0,
+        radius_max=0.0,
+        orientation=0.0,
+        tilt=0.0,
+    )
+
+
+def _hover_at(canvas: GraphCanvas, x: float, y: float) -> None:
+    canvas._on_hover(_hover_event(canvas, x, y))
+
+
+def _exit_hover(canvas: GraphCanvas) -> None:
+    canvas._on_exit(_hover_event(canvas, -9999, -9999))
+
+
 def test_graph_canvas_lays_out_a_fixture_graph() -> None:
     canvas = GraphCanvas(_page_stub())
     canvas._graph = _fixture_graph()
@@ -286,13 +319,16 @@ def test_graph_canvas_lays_out_a_fixture_graph() -> None:
     assert sorted(canvas.node_positions) == ["alpha", "beta", "gamma"]
 
 
-def test_graph_canvas_builds_a_shape_per_edge_and_two_per_node() -> None:
+def test_graph_canvas_builds_a_shape_per_edge_and_one_per_node() -> None:
+    """Labels are hover-only (Post-22 fix) -- build_shapes() is graph
+    content only (edges + node circles), not the hover-label layer.
+    """
     canvas = GraphCanvas(_page_stub())
     canvas._graph = _fixture_graph()
     canvas._compute_layout()
 
-    # 2 edges + 3 nodes x (circle + label)
-    assert len(canvas.build_shapes()) == 8
+    # 2 edges + 3 nodes x 1 circle
+    assert len(canvas.build_shapes()) == 5
 
 
 def test_graph_canvas_edges_use_a_visible_paint() -> None:
@@ -356,6 +392,26 @@ def test_graph_canvas_layout_scale_grows_with_node_count() -> None:
         big_graph.add_edge(f"note-{i}", "index")
     canvas._graph = big_graph
     assert canvas._layout_scale() == pytest.approx(51 / graph_canvas._LAYOUT_BASE_NODE_COUNT)
+
+
+def test_index_is_anchored_at_the_canvas_center_when_present() -> None:
+    canvas = GraphCanvas(_page_stub())
+    graph = nx.DiGraph()
+    graph.add_edge("a", "index")
+    graph.add_edge("b", "index")
+    canvas._graph = graph
+    canvas._compute_layout()
+
+    assert canvas.node_positions["index"] == canvas._to_canvas(0.0, 0.0)
+
+
+def test_layout_is_unaffected_when_there_is_no_index_node() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = _fixture_graph()  # alpha/beta/gamma, no "index"
+
+    canvas._compute_layout()  # must not raise
+
+    assert set(canvas.node_positions) == {"alpha", "beta", "gamma"}
 
 
 def test_graph_canvas_zoom_is_clamped() -> None:
@@ -630,6 +686,34 @@ def test_simulation_tick_repels_bystanders_and_pulls_neighbors_toward_the_anchor
     assert canvas._positions["far"] == far_pos
 
 
+def test_gravity_well_cannot_be_moved_by_dragging_another_node() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = nx.DiGraph([("leaf", "index")])
+    canvas._positions = {"leaf": (400.0, 300.0), "index": (400.0, 420.0)}
+
+    _pan_start_at(canvas, 400.0, 300.0)  # hits "leaf"
+    _pan_update_to(canvas, 500.0, 300.0, dx=100.0, dy=0.0)
+    for _ in range(10):
+        canvas._simulation_tick()
+
+    assert canvas._positions["index"] == (400.0, 420.0)
+    assert "index" not in canvas._sim_active_nodes
+
+
+def test_dragging_the_gravity_well_still_moves_its_neighbors() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = nx.DiGraph([("leaf", "index")])
+    canvas._positions = {"leaf": (400.0, 420.0), "index": (400.0, 300.0)}
+
+    _pan_start_at(canvas, 400.0, 300.0)  # hits "index"
+    _pan_update_to(canvas, 500.0, 300.0, dx=100.0, dy=0.0)
+    for _ in range(10):
+        canvas._simulation_tick()
+
+    assert "leaf" in canvas._sim_active_nodes
+    assert canvas._positions["leaf"] != (400.0, 420.0)
+
+
 def test_simulation_tick_eases_perturbed_nodes_back_to_home_after_release() -> None:
     canvas = _simulation_canvas()
     _pan_start_at(canvas, 400.0, 300.0)
@@ -756,8 +840,8 @@ def test_static_layer_holds_everything_before_any_drag() -> None:
 
     assert canvas._dynamic_slugs() == set()
     assert canvas._build_dynamic_shapes() == []
-    # 1 edge (anchor-neighbor) + 4 nodes x (circle + label).
-    assert len(canvas._build_static_shapes()) == 9
+    # 1 edge (anchor-neighbor) + 4 nodes x 1 circle.
+    assert len(canvas._build_static_shapes()) == 5
 
 
 def test_dragging_partitions_shapes_between_static_and_dynamic_layers() -> None:
@@ -771,11 +855,11 @@ def test_dragging_partitions_shapes_between_static_and_dynamic_layers() -> None:
     static_shapes = canvas._build_static_shapes()
     dynamic_shapes = canvas._build_dynamic_shapes()
 
-    # "far" is the only untouched node -- 1 node x 2 shapes, no edges (the
+    # "far" is the only untouched node -- 1 node x 1 circle, no edges (the
     # only edge in the fixture touches the now-dynamic anchor/neighbor pair).
-    assert len(static_shapes) == 2
-    # 3 dynamic nodes x 2 shapes + their connecting edge.
-    assert len(dynamic_shapes) == 7
+    assert len(static_shapes) == 1
+    # 3 dynamic nodes x 1 circle + their connecting edge.
+    assert len(dynamic_shapes) == 4
     # Nothing is duplicated or dropped between the two layers.
     assert len(static_shapes) + len(dynamic_shapes) == len(canvas.build_shapes())
 
@@ -816,6 +900,65 @@ def test_redraw_static_and_dynamic_touch_only_their_own_canvas() -> None:
     canvas._redraw_dynamic()
     assert canvas._dynamic_canvas.shapes is not dynamic_before  # rebuilt
     assert canvas._static_canvas.shapes is static_after_static_redraw  # untouched
+
+
+# --- Hover-only labels (Post-22 fix) -------------------------------------
+
+
+def test_hovering_a_node_shows_its_label_and_moving_away_clears_it() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = _fixture_graph()
+    canvas._compute_layout()
+
+    slug, (x, y) = next(iter(canvas.node_positions.items()))
+    _hover_at(canvas, x, y)
+
+    assert canvas._hovered == slug
+    assert len(canvas._hover_canvas.shapes) == 1
+    assert isinstance(canvas._hover_canvas.shapes[0], cv.Text)
+
+    _hover_at(canvas, -9999, -9999)  # empty background
+
+    assert canvas._hovered is None
+    assert canvas._hover_canvas.shapes == []
+
+
+def test_exiting_the_canvas_clears_the_hovered_label() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = _fixture_graph()
+    canvas._compute_layout()
+
+    slug, (x, y) = next(iter(canvas.node_positions.items()))
+    _hover_at(canvas, x, y)
+    assert canvas._hovered == slug
+
+    _exit_hover(canvas)
+
+    assert canvas._hovered is None
+    assert canvas._hover_canvas.shapes == []
+
+
+def test_hovering_the_same_node_again_does_not_redraw() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = _fixture_graph()
+    canvas._compute_layout()
+    slug, (x, y) = next(iter(canvas.node_positions.items()))
+    _hover_at(canvas, x, y)
+    shapes_after_first_hover = canvas._hover_canvas.shapes
+
+    _hover_at(canvas, x, y)  # same node, e.g. a tiny mouse jitter
+
+    assert canvas._hover_canvas.shapes is shapes_after_first_hover
+
+
+def test_build_shapes_never_includes_a_hover_label() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = _fixture_graph()
+    canvas._compute_layout()
+    slug, (x, y) = next(iter(canvas.node_positions.items()))
+    _hover_at(canvas, x, y)
+
+    assert not any(isinstance(s, cv.Text) for s in canvas.build_shapes())
 
 
 def test_dragging_a_node_end_to_end_runs_and_settles_the_simulation() -> None:
