@@ -1478,6 +1478,67 @@ def test_hovering_the_same_node_again_does_not_redraw() -> None:
     assert canvas._hover_canvas.shapes is shapes_after_first_hover
 
 
+def test_dragging_a_node_moves_its_hover_label_with_it() -> None:
+    """Regression: no PointerHoverEvent fires while a drag's button is
+    down, so `self._hovered` used to freeze at whatever it was when the
+    drag started -- the label then stayed put instead of tracking the
+    node being moved.
+
+    Drags without going through `_start_simulation()` (matching
+    `test_pan_update_still_redraws_directly_if_the_simulation_is_not_running`'s
+    own pattern) -- with a real page, the tick loop itself is what redraws
+    the hover canvas every frame during a drag; under the headless
+    `_page_stub()`, that loop never actually runs, so exercising the same
+    `not self._sim_active` fallback path `_on_pan_update()` already has is
+    what a synchronous test can actually observe.
+    """
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = _fixture_graph()
+    canvas._compute_layout()
+    slug, (x, y) = next(iter(canvas.node_positions.items()))
+    canvas._dragging = slug
+    assert canvas._sim_active is False
+
+    _pan_update_to(canvas, x + 40, y + 25, 40, 25)
+
+    new_x, new_y = canvas.node_positions[slug]
+    assert (new_x, new_y) != (x, y)  # sanity: the node actually moved
+    expected = canvas._hover_label_shape(slug, new_x, new_y)
+    label = canvas._hover_canvas.shapes[0]
+    assert (label.value, label.x, label.y) == (expected.value, expected.x, expected.y)
+
+
+def test_dragging_a_different_node_overrides_a_stale_hover() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = _fixture_graph()
+    canvas._compute_layout()
+    (slug_a, (xa, ya)), (slug_b, (xb, yb)) = list(canvas.node_positions.items())[:2]
+
+    _hover_at(canvas, xa, ya)
+    assert canvas._hovered == slug_a
+
+    _pan_start_at(canvas, xb, yb)  # drags a *different* node than the hovered one
+
+    labels = [s for s in canvas._hover_canvas.shapes if isinstance(s, cv.Text)]
+    assert len(labels) == 1
+    assert labels[0].value == slug_b
+
+
+def test_hover_label_clears_after_drag_ends_with_no_prior_hover() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = _fixture_graph()
+    canvas._compute_layout()
+    slug, (x, y) = next(iter(canvas.node_positions.items()))
+    assert canvas._hovered is None
+
+    _pan_start_at(canvas, x, y)
+    assert canvas._hover_canvas.shapes != []  # follows the dragged node
+
+    _pan_end(canvas)
+
+    assert canvas._hover_canvas.shapes == []  # falls back to self._hovered, still None
+
+
 def test_build_shapes_never_includes_a_hover_label() -> None:
     canvas = GraphCanvas(_page_stub())
     canvas._graph = _fixture_graph()

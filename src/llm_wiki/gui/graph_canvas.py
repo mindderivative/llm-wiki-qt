@@ -417,6 +417,11 @@ class GraphCanvas(ft.Container):
     def _on_pan_end(self, e: ft.DragEndEvent) -> None:
         self._dragging = None
         self._panning = False
+        # The hover label may have been following the just-released node
+        # (see _build_hover_shapes()) -- re-evaluate now that dragging has
+        # stopped, so it correctly falls back to self._hovered (or clears,
+        # if that was never set).
+        self._redraw_hover()
 
     # --- Live local force simulation (Phase 22) ------------------------------
 
@@ -448,6 +453,9 @@ class GraphCanvas(ft.Container):
                 self._redraw_all()
             else:
                 self._redraw_dynamic()
+                # The dragged node's label (see _build_hover_shapes())
+                # needs to track it every tick too, at the same cadence.
+                self._redraw_hover()
             await asyncio.sleep(_SIM_TICK_DT)
 
     def _simulation_tick(self) -> bool:
@@ -799,17 +807,22 @@ class GraphCanvas(ft.Container):
     def _redraw_all(self) -> None:
         self._redraw_static()
         self._redraw_dynamic()
+        self._redraw_hover()
 
     def _build_hover_shapes(self) -> list[cv.Shape]:
-        """At most one label -- whichever node the mouse is currently
-        over, if any and it still has a live position.
+        """At most one label. While a node is being dragged, its label
+        follows it -- as if part of the node -- regardless of the mouse's
+        real hover target: no PointerHoverEvent fires once a drag's button
+        is down, so `self._hovered` would otherwise stay frozen at
+        whatever it was the instant the drag started.
         """
-        if self._hovered is None:
+        target = self._dragging if self._dragging is not None else self._hovered
+        if target is None:
             return []
-        pos = self._positions.get(self._hovered)
+        pos = self._positions.get(target)
         if pos is None:
             return []
-        return [self._hover_label_shape(self._hovered, *pos)]
+        return [self._hover_label_shape(target, *pos)]
 
     def _redraw_hover(self) -> None:
         self._hover_canvas.shapes = self._build_hover_shapes()
