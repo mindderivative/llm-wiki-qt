@@ -11,6 +11,7 @@ import ast
 import asyncio
 import inspect
 import json
+import math
 import re
 import sqlite3
 import threading
@@ -168,12 +169,22 @@ def test_reopening_a_vault_closes_the_previous_connection(
 # --- Graph canvas -----------------------------------------------------
 
 
-def _page_stub() -> object:
+class _PageStub:
     """A `page` placeholder for tests that never touch `set_graph()`'s
     threaded path -- everything else on `GraphCanvas` reads/writes plain
-    state and never calls `self._page`.
+    state. `run_task()` is a no-op: `_start_simulation()` (Phase 22) calls
+    it on any node-drag start, but never awaits or inspects the result, so
+    tests that don't care about the live simulation loop itself can ignore
+    it entirely rather than needing the real `_FakePage` thread-crossing
+    double.
     """
-    return object()
+
+    def run_task(self, handler, *args, **kwargs) -> None:
+        pass
+
+
+def _page_stub() -> object:
+    return _PageStub()
 
 
 class _FakePage:
@@ -249,6 +260,20 @@ def _pan_update_to(canvas: GraphCanvas, x: float, y: float, dx: float, dy: float
             global_delta=ft.Offset(dx, dy),
             primary_delta=None,
             timestamp=0,
+        )
+    )
+
+
+def _pan_end(canvas: GraphCanvas) -> None:
+    canvas._on_pan_end(
+        ft.DragEndEvent(
+            name="pan_end",
+            control=canvas,
+            data=None,
+            local_position=ft.Offset(0, 0),
+            global_position=ft.Offset(0, 0),
+            velocity=ft.Offset(0, 0),
+            primary_velocity=None,
         )
     )
 
@@ -535,6 +560,183 @@ def test_set_graph_computes_layout_on_a_worker_thread() -> None:
         _wait_until(lambda: canvas.node_positions != {})
 
         assert sorted(canvas.node_positions) == ["alpha", "beta", "gamma"]
+    finally:
+        fake_page.close()
+
+
+# --- Live local force simulation (Phase 22) ----------------------------
+
+
+def _simulation_fixture_graph() -> nx.DiGraph:
+    """anchor <-> neighbor (a direct edge); bystander and far have no edge
+    to anchor. Positions are set directly (not via spring_layout) so the
+    physics tests are fully deterministic.
+    """
+    graph = nx.DiGraph()
+    graph.add_edge("anchor", "neighbor")
+    graph.add_node("bystander")
+    graph.add_node("far")
+    return graph
+
+
+def _simulation_canvas() -> GraphCanvas:
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = _simulation_fixture_graph()
+    canvas._positions = {
+        "anchor": (400.0, 300.0),
+        "neighbor": (400.0, 420.0),  # a direct neighbor, outside repel radius
+        "bystander": (430.0, 300.0),  # within repel radius, not a neighbor
+        "far": (900.0, 900.0),  # untouched by anything
+    }
+    return canvas
+
+
+def test_pan_start_on_a_node_snapshots_home_and_starts_the_simulation() -> None:
+    canvas = _simulation_canvas()
+    assert canvas._sim_active is False
+
+    _pan_start_at(canvas, 400.0, 300.0)
+
+    assert canvas._dragging == "anchor"
+    assert canvas._home_positions == {
+        "anchor": (400.0, 300.0),
+        "neighbor": (400.0, 420.0),
+        "bystander": (430.0, 300.0),
+        "far": (900.0, 900.0),
+    }
+    assert canvas._sim_active is True
+
+
+def test_simulation_tick_repels_bystanders_and_pulls_neighbors_toward_the_anchor() -> None:
+    canvas = _simulation_canvas()
+    _pan_start_at(canvas, 400.0, 300.0)
+    _pan_update_to(canvas, 500.0, 300.0, dx=100.0, dy=0.0)
+
+    initial_neighbor_dist = math.dist(canvas._positions["neighbor"], canvas._positions["anchor"])
+    initial_bystander_pos = canvas._positions["bystander"]
+    far_pos = canvas._positions["far"]
+
+    for _ in range(20):
+        canvas._simulation_tick()
+
+    assert (
+        math.dist(canvas._positions["neighbor"], canvas._positions["anchor"])
+        < initial_neighbor_dist
+    )
+    assert canvas._positions["bystander"] != initial_bystander_pos
+    # Pushed away from the anchor, not toward it.
+    assert canvas._positions["bystander"][0] < initial_bystander_pos[0]
+    # Untouched: not a neighbor, and never within the repel radius.
+    assert canvas._positions["far"] == far_pos
+
+
+def test_simulation_tick_eases_perturbed_nodes_back_to_home_after_release() -> None:
+    canvas = _simulation_canvas()
+    _pan_start_at(canvas, 400.0, 300.0)
+    _pan_update_to(canvas, 500.0, 300.0, dx=100.0, dy=0.0)
+    for _ in range(15):
+        canvas._simulation_tick()
+
+    home = canvas._home_positions["neighbor"]
+    assert math.dist(canvas._positions["neighbor"], home) > graph_canvas._SIM_SETTLE_DIST_EPSILON
+
+    _pan_end(canvas)
+    assert canvas._dragging is None
+
+    for _ in range(graph_canvas._SIM_SETTLE_MAX_TICKS):
+        canvas._simulation_tick()
+        if not canvas._sim_active:
+            break
+
+    assert canvas._sim_active is False
+    assert canvas._positions["neighbor"] == home
+    assert "neighbor" not in canvas._sim_active_nodes
+
+
+def test_simulation_stops_at_the_safety_cap_even_if_unconverged() -> None:
+    canvas = _simulation_canvas()
+    _pan_start_at(canvas, 400.0, 300.0)
+    _pan_update_to(canvas, 500.0, 300.0, dx=100.0, dy=0.0)
+    canvas._simulation_tick()
+    _pan_end(canvas)
+
+    # Force a node to look perpetually unconverged so only the tick-count
+    # safety cap (not real convergence) can end the loop.
+    canvas._sim_active_nodes = {"neighbor"}
+    canvas._home_positions["neighbor"] = (10_000.0, 10_000.0)
+
+    for i in range(graph_canvas._SIM_SETTLE_MAX_TICKS + 5):
+        canvas._simulation_tick()
+        if not canvas._sim_active:
+            assert i >= graph_canvas._SIM_SETTLE_MAX_TICKS
+            break
+    else:
+        raise AssertionError("simulation never stopped despite the safety cap")
+
+
+def test_a_plain_click_does_not_leave_the_simulation_running() -> None:
+    canvas = _simulation_canvas()
+    _pan_start_at(canvas, 400.0, 300.0)  # hits "anchor"
+    _pan_end(canvas)  # released before any pan_update -- a plain click
+
+    canvas._simulation_tick()
+
+    assert canvas._sim_active is False
+    assert canvas._positions["neighbor"] == (400.0, 420.0)
+    assert canvas._positions["bystander"] == (430.0, 300.0)
+
+
+def test_set_graph_stops_an_in_flight_simulation() -> None:
+    fake_page = _FakePage()
+    try:
+        canvas = GraphCanvas(fake_page)
+        canvas._graph = _simulation_fixture_graph()
+        canvas._positions = {
+            "anchor": (400.0, 300.0),
+            "neighbor": (400.0, 420.0),
+            "bystander": (430.0, 300.0),
+            "far": (900.0, 900.0),
+        }
+        _pan_start_at(canvas, 400.0, 300.0)
+        _pan_update_to(canvas, 500.0, 300.0, dx=100.0, dy=0.0)
+        assert canvas._sim_active is True
+
+        canvas.set_graph(_fixture_graph())
+
+        assert canvas._sim_active is False
+        # Let the background layout worker finish before tearing down the
+        # fake page's event loop, so it isn't left with an unawaited
+        # coroutine (matching test_set_graph_computes_layout_on_a_worker_thread).
+        _wait_until(lambda: sorted(canvas.node_positions) == ["alpha", "beta", "gamma"])
+    finally:
+        fake_page.close()
+
+
+def test_dragging_a_node_end_to_end_runs_and_settles_the_simulation() -> None:
+    """Exercises the real `page.run_task()` loop -- the direct
+    `_simulation_tick()` tests above call it synchronously and bypass the
+    async loop entirely.
+    """
+    fake_page = _FakePage()
+    try:
+        canvas = GraphCanvas(fake_page)
+        canvas._graph = _simulation_fixture_graph()
+        canvas._positions = {
+            "anchor": (400.0, 300.0),
+            "neighbor": (400.0, 420.0),
+            "bystander": (430.0, 300.0),
+            "far": (900.0, 900.0),
+        }
+
+        _pan_start_at(canvas, 400.0, 300.0)
+        assert canvas._sim_active is True
+        _pan_update_to(canvas, 500.0, 300.0, dx=100.0, dy=0.0)
+        _wait_until(lambda: canvas._positions["neighbor"] != (400.0, 420.0))
+
+        _pan_end(canvas)
+        _wait_until(lambda: canvas._sim_active is False, timeout=10.0)
+
+        assert canvas._positions["far"] == (900.0, 900.0)
     finally:
         fake_page.close()
 

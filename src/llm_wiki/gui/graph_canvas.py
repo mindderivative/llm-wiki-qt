@@ -8,7 +8,9 @@ the whole canvas, and a "basic info" overlay on node selection (Phase 17)
 extend past the mockup, which only demonstrated per-node dragging.
 """
 
+import asyncio
 import contextlib
+import math
 
 import flet as ft
 import flet.canvas as cv
@@ -31,6 +33,30 @@ _MAX_ZOOM = 2.0
 # Nominal layout space; the canvas scales to its real size on first resize.
 _BASE_WIDTH = 900.0
 _BASE_HEIGHT = 560.0
+
+# Phase 22 -- live local force simulation while dragging a node. Re-running
+# nx.spring_layout() per frame (the original hunch) was benchmarked as fast
+# enough but proved numerically unstable: its internal cooling temperature
+# resets on every call based on current position spread, so a moving fixed
+# node makes it diverge. This is a small, explicitly damped/clamped
+# spring-mass step instead -- inherently stable regardless of how far/fast
+# the dragged node moves. Starting values, tuned empirically against a
+# direct simulation; expect to retune against the real UI.
+_SIM_TICK_DT = 1 / 30  # seconds between simulation ticks
+_SIM_REPEL_RADIUS = 90.0  # px; bystanders inside this get pushed away
+_SIM_REPEL_STRENGTH = 4000.0
+_SIM_NEIGHBOR_REST_LENGTH = 70.0  # px; a dragged node's neighbor eases toward this
+_SIM_NEIGHBOR_SPRING_K = 18.0
+_SIM_HOME_SPRING_K = 16.0  # pulls a perturbed node back toward its pre-drag spot
+_SIM_DAMPING = 0.72
+_SIM_MAX_SPEED = 900.0  # px/sec, hard clamp -- guarantees stability
+# Settle is distance-based, not velocity-based: with heavy damping, speed can
+# dip below any velocity threshold while a node is still meaningfully far
+# from home (each tick discards a fixed fraction of velocity regardless of
+# remaining displacement), which would falsely mark it "at rest" mid-flight
+# and strand it there. Confirmed by direct simulation before landing on this.
+_SIM_SETTLE_DIST_EPSILON = 2.0  # px; below this + anchor released = at rest
+_SIM_SETTLE_MAX_TICKS = 90  # safety cap (~3s) so the loop always terminates
 
 
 def _category_of(slug: str) -> str:
@@ -65,6 +91,13 @@ class GraphCanvas(ft.Container):
         self._panning = False
         self._selected: str | None = None
 
+        # Phase 22 -- live local force simulation state.
+        self._home_positions: dict[str, tuple[float, float]] = {}
+        self._sim_velocities: dict[str, tuple[float, float]] = {}
+        self._sim_active_nodes: set[str] = set()
+        self._sim_active = False
+        self._sim_settle_ticks = 0
+
         self._canvas = cv.Canvas(shapes=[], expand=True, on_resize=self._on_resize)
         self._gestures = ft.GestureDetector(
             content=self._canvas,
@@ -98,6 +131,9 @@ class GraphCanvas(ft.Container):
 
     def set_graph(self, graph: nx.DiGraph) -> None:
         """Displays `graph`, computing its layout on a worker thread."""
+        # A full reload replaces `self._positions` wholesale -- stop any
+        # in-flight simulation so it doesn't fight the fresh layout.
+        self._sim_active = False
         self._graph = graph.copy()
         self._page.run_thread(self._layout_worker)
 
@@ -176,6 +212,7 @@ class GraphCanvas(ft.Container):
             self._panning = False
             self._selected = self._dragging
             self._notify_selection()
+            self._start_simulation()
         else:
             # Empty background: pan the whole canvas instead of a node.
             self._panning = True
@@ -198,6 +235,102 @@ class GraphCanvas(ft.Container):
     def _on_pan_end(self, e: ft.DragEndEvent) -> None:
         self._dragging = None
         self._panning = False
+
+    # --- Live local force simulation (Phase 22) ------------------------------
+
+    def _start_simulation(self) -> None:
+        """Called when a node-drag begins. Snapshots the pre-drag layout as
+        the "home" every perturbed node eases back toward once released, and
+        (re)starts the tick loop if it isn't already running.
+        """
+        self._home_positions = dict(self._positions)
+        self._sim_velocities = {}
+        self._sim_active_nodes = set()
+        self._sim_settle_ticks = 0
+        if not self._sim_active:
+            self._sim_active = True
+            self._page.run_task(self._simulation_loop)
+
+    async def _simulation_loop(self) -> None:
+        while self._sim_active:
+            self._simulation_tick()
+            self._redraw()
+            await asyncio.sleep(_SIM_TICK_DT)
+
+    def _simulation_tick(self) -> None:
+        """One physics step. Reads/writes only `self._positions` /
+        `self._sim_velocities` / `self._sim_active_nodes` -- touches no
+        Flet control, so it's safe to call directly (e.g. from tests) and
+        cheap enough to run every tick on the event-loop thread.
+        """
+        anchor = self._dragging
+        neighbors: set[str] = set()
+        if anchor is not None and anchor in self._graph:
+            neighbors = set(self._graph.predecessors(anchor)) | set(
+                self._graph.successors(anchor)
+            )
+
+        anchor_pos = self._positions.get(anchor) if anchor is not None else None
+        if anchor is not None:
+            self._sim_settle_ticks = 0
+            self._sim_active_nodes |= neighbors & self._home_positions.keys()
+            if anchor_pos is not None:
+                for slug, pos in self._positions.items():
+                    if slug == anchor or slug not in self._home_positions:
+                        continue
+                    if math.dist(pos, anchor_pos) < _SIM_REPEL_RADIUS:
+                        self._sim_active_nodes.add(slug)
+        else:
+            self._sim_settle_ticks += 1
+
+        still_active: set[str] = set()
+        for slug in self._sim_active_nodes:
+            if slug not in self._positions or slug not in self._home_positions:
+                continue
+            px, py = self._positions[slug]
+            vx, vy = self._sim_velocities.get(slug, (0.0, 0.0))
+            fx = fy = 0.0
+
+            if anchor_pos is not None:
+                dx, dy = px - anchor_pos[0], py - anchor_pos[1]
+                dist = max(math.hypot(dx, dy), 1e-3)
+                if slug in neighbors:
+                    stretch = dist - _SIM_NEIGHBOR_REST_LENGTH
+                    fx += -_SIM_NEIGHBOR_SPRING_K * stretch * dx / dist
+                    fy += -_SIM_NEIGHBOR_SPRING_K * stretch * dy / dist
+                if dist < _SIM_REPEL_RADIUS:
+                    push = _SIM_REPEL_STRENGTH * (1 - dist / _SIM_REPEL_RADIUS) / dist
+                    fx += push * dx
+                    fy += push * dy
+
+            hx, hy = self._home_positions[slug]
+            fx += -_SIM_HOME_SPRING_K * (px - hx)
+            fy += -_SIM_HOME_SPRING_K * (py - hy)
+
+            vx = (vx + fx * _SIM_TICK_DT) * _SIM_DAMPING
+            vy = (vy + fy * _SIM_TICK_DT) * _SIM_DAMPING
+            speed = math.hypot(vx, vy)
+            if speed > _SIM_MAX_SPEED:
+                scale = _SIM_MAX_SPEED / speed
+                vx, vy = vx * scale, vy * scale
+
+            new_pos = (px + vx * _SIM_TICK_DT, py + vy * _SIM_TICK_DT)
+
+            if anchor is None and math.dist(new_pos, (hx, hy)) < _SIM_SETTLE_DIST_EPSILON:
+                self._positions[slug] = self._home_positions[slug]
+                self._sim_velocities.pop(slug, None)
+                continue
+
+            self._positions[slug] = new_pos
+            self._sim_velocities[slug] = (vx, vy)
+            still_active.add(slug)
+
+        self._sim_active_nodes = still_active
+
+        if anchor is None and (
+            not self._sim_active_nodes or self._sim_settle_ticks > _SIM_SETTLE_MAX_TICKS
+        ):
+            self._sim_active = False
 
     def _notify_selection(self) -> None:
         if self.on_node_selected is not None:
