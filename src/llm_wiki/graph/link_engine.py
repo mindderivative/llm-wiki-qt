@@ -79,6 +79,22 @@ def degrees_of_separation(
     return length if length <= max_degrees else None
 
 
+def count_wikilink_occurrences(conn: sqlite3.Connection, vault_root: Path | str) -> int:
+    """Total raw `[[wikilink]]` syntax occurrences across every note's
+    current body content -- distinct from `links`' deduped edge count:
+    `_extract_wikilink_targets()` collapses repeat references to the same
+    target within one note down to a single edge, but the syntax itself
+    still appears more than once in the file.
+    """
+    vault_root = Path(vault_root)
+    total = 0
+    for row in conn.execute("SELECT path FROM notes").fetchall():
+        note_path = vault_root / row["path"]
+        if note_path.exists():
+            total += len(_WIKILINK_RE.findall(note_path.read_text(encoding="utf-8")))
+    return total
+
+
 def _sync_one_note(conn: sqlite3.Connection, vault_root: Path, row: sqlite3.Row) -> None:
     note_path = vault_root / row["path"]
     content = note_path.read_text(encoding="utf-8") if note_path.exists() else ""

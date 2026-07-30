@@ -2,6 +2,7 @@
 
 from llm_wiki.graph.link_engine import (
     MAX_DEGREES,
+    count_wikilink_occurrences,
     degrees_of_separation,
     get_graph_data,
     rebuild_full,
@@ -10,6 +11,7 @@ from llm_wiki.graph.link_engine import (
 
 __all__ = [
     "MAX_DEGREES",
+    "count_wikilink_occurrences",
     "degrees_of_separation",
     "get_graph_data",
     "rebuild_full",

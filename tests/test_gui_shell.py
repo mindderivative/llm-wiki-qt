@@ -22,6 +22,7 @@ import flet.canvas as cv
 import networkx as nx
 import pytest
 
+from llm_wiki.graph import sync_links
 from llm_wiki.gui import app as app_module
 from llm_wiki.gui import graph_canvas, theme
 from llm_wiki.gui.app_controller import AppController
@@ -37,7 +38,7 @@ from llm_wiki.gui.health_panel import HealthPanel
 from llm_wiki.gui.menu import build_menu_bar
 from llm_wiki.gui.splitter import ResizeHandle
 from llm_wiki.models import LintFindingKind, LLMWikiError
-from llm_wiki.storage import connect
+from llm_wiki.storage import connect, upsert_note_from_file
 from llm_wiki.vault import create_vault
 
 
@@ -979,11 +980,36 @@ def test_dashboard_panel_reflects_real_vault_stats(vault_root: Path) -> None:
     conn.commit()
 
     panel = DashboardPanel()
-    panel.set_connection(conn)
+    panel.set_connection(conn, vault_root)
 
     assert panel.stats.concepts == 1
     assert panel.stats.total_ingested == 1
     assert panel.build_chart().max_y >= 1
+
+
+def test_dashboard_panel_distinguishes_wikilinks_from_backlinks(vault_root: Path) -> None:
+    """Unlike `test_dashboard_panel_reflects_real_vault_stats`'s DB-only
+    row (no file on disk, so wikilink counting sees nothing there), this
+    writes a real note referencing the same target twice -- the concrete
+    case the two separate stat cards exist to show.
+    """
+    conn = connect(vault_root / ".llm-wiki" / "db.sqlite3")
+    note_dir = vault_root / "wiki" / "concepts"
+    note_dir.mkdir(parents=True, exist_ok=True)
+    note_path = note_dir / "a.md"
+    note_path.write_text(
+        "---\ntitle: A\nslug: a\ntype: concept\ntags: []\nsources: []\n---\n\n"
+        "See [[index]] here and [[index]] again.\n",
+        encoding="utf-8",
+    )
+    upsert_note_from_file(conn, vault_root, note_path)
+    sync_links(conn, vault_root)
+
+    panel = DashboardPanel()
+    panel.set_connection(conn, vault_root)
+
+    assert panel.stats.total_wikilinks == 2
+    assert panel.stats.total_backlinks == 1
 
 
 # --- Architectural guard ----------------------------------------------

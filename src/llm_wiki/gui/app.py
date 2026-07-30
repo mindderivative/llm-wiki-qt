@@ -245,7 +245,7 @@ class Shell:
         if self.controller.conn is not None:
             self.graph.set_graph(get_graph_data(self.controller.conn))
             self.health_panel.set_connection(self.controller.conn)
-            self.dashboard_panel.set_connection(self.controller.conn)
+            self.dashboard_panel.set_connection(self.controller.conn, self.controller.vault_path)
             self.items_panel.set_connection(self.controller.conn)
         self.git_panel.set_vault_path(self.controller.vault_path)
 
@@ -334,7 +334,7 @@ class Shell:
             return
         self.graph.set_graph(get_graph_data(self.controller.conn))
         self.health_panel.set_connection(self.controller.conn)
-        self.dashboard_panel.set_connection(self.controller.conn)
+        self.dashboard_panel.set_connection(self.controller.conn, self.controller.vault_path)
         self.items_panel.refresh()
         self.page.update()
 

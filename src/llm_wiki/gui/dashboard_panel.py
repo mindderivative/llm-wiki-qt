@@ -8,6 +8,7 @@ Wired to `storage.get_vault_stats()`, which is a plain aggregation over
 
 import contextlib
 import sqlite3
+from pathlib import Path
 
 import flet as ft
 import flet_charts as fc
@@ -24,30 +25,46 @@ _NOTE_TYPES = (
 )
 
 _EMPTY_STATS = VaultStats(
-    concepts=0, entities=0, sources=0, synthesis=0, total_ingested=0, failures=0
+    concepts=0,
+    entities=0,
+    sources=0,
+    synthesis=0,
+    total_ingested=0,
+    failures=0,
+    total_wikilinks=0,
+    total_backlinks=0,
 )
 
 
 class DashboardPanel(ft.Container):
-    """Note-type counts and ingestion history, as a bar chart plus stat cards."""
+    """Note-type counts, ingestion history, and link counts, as a bar chart
+    plus stat cards.
+    """
 
     def __init__(self) -> None:
         super().__init__()
         self.padding = 14
         self.expand = True
         self._conn: sqlite3.Connection | None = None
+        self._vault_root: Path | None = None
         self.stats = _EMPTY_STATS
 
         self._body = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
         self.content = self._body
         self._render()
 
-    def set_connection(self, conn: sqlite3.Connection | None) -> None:
+    def set_connection(
+        self, conn: sqlite3.Connection | None, vault_root: str | Path | None = None
+    ) -> None:
         self._conn = conn
+        self._vault_root = Path(vault_root) if vault_root is not None else None
         self.refresh()
 
     def refresh(self) -> None:
-        self.stats = get_vault_stats(self._conn) if self._conn is not None else _EMPTY_STATS
+        if self._conn is not None and self._vault_root is not None:
+            self.stats = get_vault_stats(self._conn, self._vault_root)
+        else:
+            self.stats = _EMPTY_STATS
         self._render()
         # Suppressed while unattached: the initial build, and headless tests.
         with contextlib.suppress(RuntimeError):
@@ -95,6 +112,8 @@ class DashboardPanel(ft.Container):
         cards += [
             ("Total Ingested", str(self.stats.total_ingested)),
             ("Failures", str(self.stats.failures)),
+            ("Total WikiLinks", str(self.stats.total_wikilinks)),
+            ("Total Backlinks", str(self.stats.total_backlinks)),
         ]
         return ft.Row(
             wrap=True,
