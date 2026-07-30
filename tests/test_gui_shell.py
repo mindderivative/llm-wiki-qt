@@ -16,6 +16,7 @@ import re
 import sqlite3
 import threading
 import time
+from datetime import date
 from pathlib import Path
 
 import flet as ft
@@ -548,26 +549,36 @@ def test_panning_empty_background_moves_the_view_not_the_nodes() -> None:
 def test_settings_panel_defaults_to_expanded_with_the_legend_visible() -> None:
     canvas = GraphCanvas(_page_stub())
 
-    content = canvas._settings_panel.content
-    assert isinstance(content, ft.Column)
-    # header + the legend column beneath it
-    assert len(content.controls) == 2
+    assert canvas._panel_body.visible is True
+    assert canvas._panel_chevron.value == "▾"
+    # header + the capped/scrollable body beneath it -- built once, never
+    # swapped out again (Post-24 fix #3).
+    assert len(canvas._settings_panel.content.controls) == 2
 
 
 def test_toggling_the_settings_panel_collapses_it_and_fires_the_callback() -> None:
+    """Post-24 fix #3: expand/collapse mutates `_panel_body.visible` and
+    the chevron glyph in place -- `_settings_panel.content` is never
+    reassigned, unlike the old rebuild-based implementation.
+    """
     seen: list[bool] = []
     canvas = GraphCanvas(_page_stub(), on_settings_panel_toggled=seen.append)
+    panel_content_before = canvas._settings_panel.content
 
     canvas._toggle_settings_panel()
 
     assert canvas._settings_panel_expanded is False
-    assert isinstance(canvas._settings_panel.content, ft.Row)  # header only
+    assert canvas._panel_body.visible is False
+    assert canvas._panel_chevron.value == "▸"
+    assert canvas._settings_panel.content is panel_content_before
     assert seen == [False]
 
     canvas._toggle_settings_panel()
 
     assert canvas._settings_panel_expanded is True
-    assert isinstance(canvas._settings_panel.content, ft.Column)
+    assert canvas._panel_body.visible is True
+    assert canvas._panel_chevron.value == "▾"
+    assert canvas._settings_panel.content is panel_content_before
     assert seen == [False, True]
 
 
@@ -578,7 +589,7 @@ def test_set_settings_panel_expanded_syncs_without_firing_the_callback() -> None
     canvas.set_settings_panel_expanded(False)
 
     assert canvas._settings_panel_expanded is False
-    assert isinstance(canvas._settings_panel.content, ft.Row)
+    assert canvas._panel_body.visible is False
     assert seen == []  # syncing from settings is not a user toggle
 
 
@@ -589,6 +600,7 @@ def test_set_settings_panel_expanded_is_a_no_op_for_the_same_value() -> None:
     canvas.set_settings_panel_expanded(True)  # already the default
 
     assert canvas._settings_panel.content is content_before
+    assert canvas._panel_body.visible is True
 
 
 # --- Filters (Phase 24) --------------------------------------------------
@@ -638,6 +650,10 @@ def _filters_canvas() -> GraphCanvas:
         "note-b": (20.0, 0.0),
         "note-c": (30.0, 0.0),
     }
+    # The tags popup was built against the empty graph __init__() started
+    # with -- refresh it now that the fixture's real tag vocabulary is in
+    # place, matching what a real layout completion would do.
+    canvas._refresh_tag_popup()
     return canvas
 
 
@@ -756,7 +772,14 @@ def test_filter_change_deselects_a_node_that_no_longer_passes() -> None:
     assert canvas._info_overlay.visible is False
 
 
-# --- Redraw/rebuild decoupling (Post-24 fix, IMPORTANT) -------------------
+# --- Redraw/rebuild decoupling (Post-24 fix #3, IMPORTANT) ----------------
+#
+# Every one of these locks in the same guarantee: NO control interaction
+# ever reassigns `_settings_panel.content` (or any other container's
+# content/controls) -- not just the two "continuous" controls the first
+# Post-24 fix exempted, but every single one, per the user's explicit
+# correction. Each control mutates only itself (or, for a tag chip,
+# itself + the trigger label) and calls .update() directly.
 
 
 def test_search_field_change_does_not_rebuild_the_settings_panel() -> None:
@@ -781,6 +804,7 @@ def test_search_field_change_does_not_rebuild_the_settings_panel() -> None:
 
 def test_degrees_slider_change_does_not_rebuild_the_settings_panel() -> None:
     canvas = _filters_canvas()
+    canvas._selected = "note-a"  # caption text differs with vs without a selection
     canvas._redraw_all()
     panel_content_before = canvas._settings_panel.content
 
@@ -788,6 +812,80 @@ def test_degrees_slider_change_does_not_rebuild_the_settings_panel() -> None:
 
     assert canvas._settings_panel.content is panel_content_before
     assert canvas._filter_degrees == 3
+    assert canvas._degrees_caption.value == "Within 3 hop(s) of the selection"
+
+
+def test_type_checkbox_change_does_not_rebuild_the_settings_panel() -> None:
+    canvas = _filters_canvas()
+    panel_content_before = canvas._settings_panel.content
+
+    canvas._on_filter_type_changed("entity", False)
+
+    assert canvas._settings_panel.content is panel_content_before
+    assert "entity" not in canvas._filter_types
+
+
+def test_tag_chip_toggle_mutates_only_that_chip_and_the_trigger_label() -> None:
+    """The bug this whole fix chases: clicking a chip used to tear down and
+    rebuild the entire panel mid-interaction, leaving the PopupMenuButton
+    "selected but stale". Now a chip click must touch only its own
+    container -- not the panel, not any other chip.
+    """
+    canvas = _filters_canvas()
+    panel_content_before = canvas._settings_panel.content
+    other_chip = canvas._tag_chip_controls["physics"]
+    other_chip_bgcolor_before = other_chip.bgcolor
+
+    canvas._on_filter_tag_toggled("core")
+
+    assert canvas._settings_panel.content is panel_content_before
+    assert "core" in canvas._filter_tags
+    assert canvas._tag_chip_controls["core"].bgcolor == theme.ACCENT
+    assert canvas._tags_trigger_label.value == "Tags (1)"
+    # A different tag's chip is untouched by toggling this one.
+    assert canvas._tag_chip_controls["physics"].bgcolor == other_chip_bgcolor_before
+
+
+def test_date_pick_mutates_only_its_own_label() -> None:
+    canvas = _filters_canvas()
+    panel_content_before = canvas._settings_panel.content
+
+    canvas._on_filter_date_from_changed(date(2026, 2, 1))
+
+    assert canvas._settings_panel.content is panel_content_before
+    assert canvas._filter_date_from == "2026-02-01"
+    assert canvas._date_from_label.value == "From: 2026-02-01"
+
+
+def test_switch_toggle_does_not_rebuild_the_settings_panel() -> None:
+    canvas = _filters_canvas()
+    panel_content_before = canvas._settings_panel.content
+
+    canvas._on_filter_master_toggled(False)
+
+    assert canvas._settings_panel.content is panel_content_before
+    assert canvas._filters_enabled is False
+
+
+def test_selecting_a_node_updates_the_degrees_caption_directly() -> None:
+    """Regression (Post-24 fix #3): the degrees caption reads
+    `self._selected`, so it went stale the moment a node was (de)selected
+    -- a second instance of the same "the panel doesn't know the graph
+    changed" bug, fixed by mutating it directly from _notify_selection().
+    """
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = _fixture_graph_with_attrs()
+    canvas._compute_layout()
+    assert canvas._degrees_caption.value == "Applies once you select a node"
+
+    x, y = canvas.node_positions["alpha"]
+    _pan_start_at(canvas, x, y)
+
+    assert canvas._degrees_caption.value == "Within 1 hop(s) of the selection"
+
+    _pan_start_at(canvas, -9999, -9999)  # empty background -- deselects
+
+    assert canvas._degrees_caption.value == "Applies once you select a node"
 
 
 # --- Master and per-dimension enable switches (Post-24 fix) ---------------
@@ -845,12 +943,21 @@ def test_filters_reset_restores_defaults_and_fires_the_callback() -> None:
     assert canvas._filter_types_enabled is True
     assert canvas._filter_degrees_enabled is False  # the one exception -- see __init__
     assert seen[-1] == canvas._current_filter_state()
+    # Post-24 fix #3: Reset syncs every stored control too, not just state.
+    assert canvas._type_checkboxes["concept"].value is True
+    assert canvas._search_field.value == ""
+    assert canvas._date_from_label.value == "From: Any"
+    assert canvas._degrees_slider.value == 1
+    assert canvas._master_switch.value is True
+    assert canvas._types_switch.value is True
+    assert canvas._degrees_switch.value is False
 
 
 def test_set_filters_syncs_without_firing_the_callback() -> None:
     seen: list[GraphFilterState] = []
     canvas = GraphCanvas(_page_stub(), on_filters_changed=seen.append)
     canvas._graph = _filters_fixture_graph()
+    canvas._refresh_tag_popup()  # picks up the fixture's real tag vocabulary
 
     state = GraphFilterState(
         types=frozenset({"concept"}),
@@ -874,6 +981,15 @@ def test_set_filters_syncs_without_firing_the_callback() -> None:
     assert canvas._filter_tags_enabled is False
     assert canvas._filter_degrees_enabled is True
     assert seen == []  # syncing from settings is not a user change
+    # Post-24 fix #3: set_filters() syncs every stored control too.
+    assert canvas._type_checkboxes["concept"].value is True
+    assert canvas._type_checkboxes["entity"].value is False
+    assert canvas._tag_chip_controls["core"].bgcolor == theme.ACCENT
+    assert canvas._search_field.value == "alpha"
+    assert canvas._date_from_label.value == "From: 2026-01-01"
+    assert canvas._degrees_slider.value == 3
+    assert canvas._tags_switch.value is False
+    assert canvas._degrees_switch.value is True
 
 
 def test_set_filters_is_a_no_op_for_an_unchanged_state() -> None:

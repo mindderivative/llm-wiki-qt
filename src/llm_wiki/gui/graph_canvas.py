@@ -323,6 +323,7 @@ class GraphCanvas(ft.Container):
         thread.
         """
         self._positions = self._layout_positions()
+        self._refresh_tag_popup()
         self._redraw_all()
 
     def _layout_worker(self) -> None:
@@ -331,6 +332,10 @@ class GraphCanvas(ft.Container):
 
     async def _apply_positions(self, positions: dict[str, tuple[float, float]]) -> None:
         self._positions = positions
+        # A reload is the only moment the tag vocabulary can actually
+        # change -- unrelated to any filter control being clicked, so this
+        # is the one place the popup's chip set gets rebuilt.
+        self._refresh_tag_popup()
         self._redraw_all()
 
     def _to_canvas(self, x: float, y: float) -> tuple[float, float]:
@@ -540,6 +545,13 @@ class GraphCanvas(ft.Container):
             self.on_node_selected(self._selected)
         self._update_info_overlay()
         self._update_degrees_from_selected()
+        # Post-24 fix #3: the degrees caption reads self._selected, so it
+        # goes stale the instant a node is (de)selected unless mutated
+        # directly here -- the same bug class as the Filters panel at
+        # large, just a second instance of it.
+        self._degrees_caption.value = self._degrees_caption_text()
+        with contextlib.suppress(RuntimeError):
+            self._degrees_caption.update()
         self._redraw_all()
 
     def _update_degrees_from_selected(self) -> None:
@@ -807,23 +819,24 @@ class GraphCanvas(ft.Container):
     # --- Settings panel (Phase 23) -------------------------------------------
 
     def _build_settings_panel(self) -> ft.Control:
-        """Replaces the old always-on legend -- same slot/styling, now a
+        """Replaces the old always-on legend -- same slot/styling, a
         collapsible shell. Fixed width (Post-24 fix): nothing inside --
         the tag list in particular -- can stretch this across the graph
         regardless of how much content it holds.
-        """
-        return ft.Container(
-            left=14,
-            top=12,
-            width=260,
-            padding=ft.Padding(12, 9, 12, 9),
-            bgcolor=theme.CHROME_BG,
-            border=ft.Border.all(1, theme.BORDER),
-            border_radius=8,
-            content=self._build_settings_panel_content(),
-        )
 
-    def _build_settings_panel_content(self) -> ft.Control:
+        Post-24 fix #3: every control that can change appearance is built
+        exactly once, here, and stored on `self`. No handler ever
+        reassigns `self._settings_panel.content` (or any other control's
+        `.content`/`.controls`) again -- every interaction only mutates
+        the specific control(s) it affects and calls `.update()` on them
+        directly, the same discipline `_build_info_overlay()`/
+        `_update_info_overlay()` already established for the selection
+        card. This is what makes every control genuinely self-contained:
+        the settings panel itself never cares what's inside it.
+        """
+        self._panel_chevron = ft.Text(
+            "▾" if self._settings_panel_expanded else "▸", size=11, color=theme.TEXT_TOGGLE_OFF
+        )
         header = ft.Row(
             spacing=6,
             controls=[
@@ -832,40 +845,35 @@ class GraphCanvas(ft.Container):
                     "Settings", size=10.5, weight=ft.FontWeight.W_600, color=theme.TEXT
                 ),
                 ft.Container(width=24),  # spacer, pushes the toggle to the right
-                ft.Container(
-                    on_click=self._toggle_settings_panel,
-                    content=ft.Text(
-                        "▾" if self._settings_panel_expanded else "▸",
-                        size=11,
-                        color=theme.TEXT_TOGGLE_OFF,
-                    ),
-                ),
+                ft.Container(on_click=self._toggle_settings_panel, content=self._panel_chevron),
             ],
         )
-        if not self._settings_panel_expanded:
-            return header
-        return ft.Column(
-            spacing=8,
-            controls=[
-                header,
-                ft.Container(
-                    # Phase 24 (Filters) made this section genuinely tall --
-                    # capped height + scroll instead of growing to cover
-                    # the graph.
-                    height=480,
-                    content=ft.Column(
-                        spacing=10,
-                        scroll=ft.ScrollMode.AUTO,
-                        controls=[
-                            self._section_label("CATEGORIES"),
-                            self._build_legend_section(),
-                            ft.Container(height=1, bgcolor=theme.BORDER),
-                            self._section_label("FILTERS"),
-                            self._build_filters_section(),
-                        ],
-                    ),
-                ),
-            ],
+        self._panel_body = ft.Container(
+            # Phase 24 (Filters) made this section genuinely tall -- capped
+            # height + scroll instead of growing to cover the graph.
+            height=480,
+            visible=self._settings_panel_expanded,
+            content=ft.Column(
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO,
+                controls=[
+                    self._section_label("CATEGORIES"),
+                    self._build_legend_section(),
+                    ft.Container(height=1, bgcolor=theme.BORDER),
+                    self._section_label("FILTERS"),
+                    self._build_filters_section(),
+                ],
+            ),
+        )
+        return ft.Container(
+            left=14,
+            top=12,
+            width=260,
+            padding=ft.Padding(12, 9, 12, 9),
+            bgcolor=theme.CHROME_BG,
+            border=ft.Border.all(1, theme.BORDER),
+            border_radius=8,
+            content=ft.Column(spacing=8, controls=[header, self._panel_body]),
         )
 
     def _section_label(self, text: str) -> ft.Control:
@@ -886,15 +894,33 @@ class GraphCanvas(ft.Container):
             ],
         )
 
-    # --- Filters (Phase 24, redesigned Post-24 fix) ---------------------------
+    # --- Filters (Phase 24, redesigned Post-24 fix #3) -------------------------
+    #
+    # Every control below is built exactly once (from _build_filters_section(),
+    # itself only ever called from _build_settings_panel() in __init__) and
+    # its reference stored on self. Interaction handlers mutate only the
+    # specific control(s) they affect -- never rebuild any container's
+    # content/controls list. The one exception is the tag-chip column,
+    # which is rebuilt, but only when the underlying tag *vocabulary*
+    # changes (a graph reload), never from a filter interaction -- see
+    # _refresh_tag_popup().
 
     def _all_tags(self) -> list[str]:
         tags = {t for _, data in self._graph.nodes(data=True) for t in (data.get("tags") or [])}
         return sorted(tags)
 
-    def _build_tag_chip(self, tag: str) -> ft.Control:
+    def _tags_trigger_text(self) -> str:
+        count = len(self._filter_tags)
+        return f"Tags ({count})" if count else "Tags"
+
+    def _degrees_caption_text(self) -> str:
+        if self._selected is None:
+            return "Applies once you select a node"
+        return f"Within {self._filter_degrees} hop(s) of the selection"
+
+    def _build_tag_chip(self, tag: str) -> ft.Container:
         selected = tag in self._filter_tags
-        return ft.Container(
+        chip = ft.Container(
             padding=ft.Padding(8, 4, 8, 4),
             bgcolor=theme.ACCENT if selected else theme.CARD_BG,
             border=ft.Border.all(1, theme.ACCENT if selected else theme.BORDER_STRONG),
@@ -904,26 +930,162 @@ class GraphCanvas(ft.Container):
                 tag, size=10, color=theme.TEXT if selected else theme.TEXT_TOGGLE_OFF
             ),
         )
+        self._tag_chip_controls[tag] = chip
+        return chip
 
-    def _build_date_button(
-        self, label: str, value: str | None, on_click, *, disabled: bool
-    ) -> ft.Control:
-        return ft.Container(
-            padding=ft.Padding(8, 5, 8, 5),
-            bgcolor=theme.CARD_BG,
-            border=ft.Border.all(1, theme.BORDER_STRONG),
-            border_radius=6,
-            on_click=None if disabled else on_click,
-            opacity=0.5 if disabled else 1.0,
-            content=ft.Text(f"{label}: {value or 'Any'}", size=10, color=theme.TEXT_TOGGLE_OFF),
+    def _style_tag_chip(self, tag: str) -> None:
+        """Mutates one chip's own container in place -- the only control a
+        tag toggle touches. Other chips, and the panel around them, are
+        never rebuilt.
+        """
+        chip = self._tag_chip_controls.get(tag)
+        if chip is None:
+            return
+        selected = tag in self._filter_tags
+        chip.bgcolor = theme.ACCENT if selected else theme.CARD_BG
+        chip.border = ft.Border.all(1, theme.ACCENT if selected else theme.BORDER_STRONG)
+        chip.content.color = theme.TEXT if selected else theme.TEXT_TOGGLE_OFF
+        with contextlib.suppress(RuntimeError):
+            chip.update()
+
+    def _build_tag_chip_list_controls(self) -> list[ft.Control]:
+        self._tag_chip_controls = {}
+        tags = self._all_tags()
+        if not tags:
+            return [ft.Text("No tags yet", size=10, color=theme.TEXT_MUTED)]
+        return [
+            ft.Row(
+                wrap=True,
+                spacing=4,
+                run_spacing=4,
+                controls=[self._build_tag_chip(tag) for tag in tags],
+            )
+        ]
+
+    def _refresh_tag_popup(self) -> None:
+        """Rebuilds just the tag-chip column -- called only when the tag
+        *vocabulary* could have changed (a graph reload), never from a
+        filter interaction. Everything else in the panel is untouched.
+        """
+        self._tags_chip_column.controls = self._build_tag_chip_list_controls()
+        with contextlib.suppress(RuntimeError):
+            self._tags_chip_column.update()
+
+    def _build_tags_popup(self) -> ft.Control:
+        """A PopupMenuButton (Post-24 fix #1) rather than an inline wrapping
+        row -- the tag list has no natural bound on length, and an inline
+        row had nothing to wrap *within*, which was the actual cause of the
+        panel stretching across the graph. The popup's own content is a
+        fixed-size scrollable box, so however many tags exist, the popup
+        itself never grows past it. `menu_padding` (Post-24 fix #3), not an
+        inner Container padding, so the uniform inset comes from the menu
+        surface itself rather than being asymmetrically absorbed by
+        content-width-driven popup sizing.
+        """
+        self._tags_chip_column = ft.Column(
+            scroll=ft.ScrollMode.AUTO, controls=self._build_tag_chip_list_controls()
+        )
+        self._tags_trigger_label = ft.Text(
+            self._tags_trigger_text(), size=10.5, color=theme.TEXT_TOGGLE_OFF
+        )
+        return ft.PopupMenuButton(
+            menu_padding=ft.Padding(8, 8, 8, 8),
+            content=ft.Container(
+                padding=ft.Padding(8, 5, 8, 5),
+                bgcolor=theme.CARD_BG,
+                border=ft.Border.all(1, theme.BORDER_STRONG),
+                border_radius=6,
+                content=self._tags_trigger_label,
+            ),
+            items=[
+                ft.PopupMenuItem(
+                    content=ft.Container(width=220, height=200, content=self._tags_chip_column)
+                )
+            ],
         )
 
+    def _build_type_content(self) -> ft.Control:
+        self._type_checkboxes = {}
+        rows = []
+        for type_key, label, color in _FILTER_NOTE_TYPES:
+            checkbox = ft.Checkbox(
+                value=type_key in self._filter_types,
+                fill_color=color,
+                on_change=(
+                    lambda e, t=type_key: self._on_filter_type_changed(t, e.control.value)
+                ),
+            )
+            self._type_checkboxes[type_key] = checkbox
+            rows.append(
+                ft.Row(
+                    spacing=4,
+                    controls=[checkbox, ft.Text(label, size=10.5, color=theme.TEXT_TOGGLE_OFF)],
+                )
+            )
+        return ft.Column(spacing=2, controls=rows)
+
+    def _build_search_content(self) -> ft.Control:
+        self._search_field = ft.TextField(
+            value=self._filter_search,
+            hint_text="Search notes…",
+            height=34,
+            text_size=11,
+            content_padding=ft.Padding(8, 4, 8, 4),
+            on_change=lambda e: self._on_filter_search_changed(e.control.value),
+        )
+        return self._search_field
+
+    def _build_date_content(self) -> ft.Control:
+        self._date_from_label = ft.Text(
+            f"From: {self._filter_date_from or 'Any'}", size=10, color=theme.TEXT_TOGGLE_OFF
+        )
+        self._date_to_label = ft.Text(
+            f"To: {self._filter_date_to or 'Any'}", size=10, color=theme.TEXT_TOGGLE_OFF
+        )
+        return ft.Row(
+            spacing=6,
+            controls=[
+                ft.Container(
+                    padding=ft.Padding(8, 5, 8, 5),
+                    bgcolor=theme.CARD_BG,
+                    border=ft.Border.all(1, theme.BORDER_STRONG),
+                    border_radius=6,
+                    on_click=lambda e: self._page.show_dialog(self._date_picker_from),
+                    content=self._date_from_label,
+                ),
+                ft.Container(
+                    padding=ft.Padding(8, 5, 8, 5),
+                    bgcolor=theme.CARD_BG,
+                    border=ft.Border.all(1, theme.BORDER_STRONG),
+                    border_radius=6,
+                    on_click=lambda e: self._page.show_dialog(self._date_picker_to),
+                    content=self._date_to_label,
+                ),
+            ],
+        )
+
+    def _build_degrees_content(self) -> ft.Control:
+        self._degrees_caption = ft.Text(
+            self._degrees_caption_text(), size=10, color=theme.TEXT_MUTED
+        )
+        self._degrees_slider = ft.Slider(
+            min=1,
+            max=5,
+            divisions=4,
+            value=self._filter_degrees,
+            label="{value}",
+            on_change=lambda e: self._on_filter_degrees_changed(int(e.control.value)),
+        )
+        return ft.Column(spacing=2, controls=[self._degrees_caption, self._degrees_slider])
+
     def _build_filter_section_box(
-        self, title: str, enabled: bool, on_toggle, content: ft.Control
+        self, title: str, switch: ft.Switch, content: ft.Control
     ) -> ft.Control:
-        """A bordered, labeled sub-section with its own enable switch --
-        one per filter dimension (Post-24 fix #3/#4: visually separated,
-        individually toggleable without losing its configured value).
+        """A bordered, labeled sub-section wrapping a pre-built enable
+        switch -- one per filter dimension (Post-24 fix #3/#4: visually
+        separated, individually toggleable without losing its configured
+        value). The switch is built by the caller, not here, so its
+        reference can be stored for `_sync_filter_controls_to_state()`.
         """
         return ft.Container(
             padding=ft.Padding(8, 6, 8, 6),
@@ -939,10 +1101,7 @@ class GraphCanvas(ft.Container):
                             ft.Text(
                                 title, size=10.5, weight=ft.FontWeight.W_600, color=theme.TEXT
                             ),
-                            ft.Switch(
-                                value=enabled,
-                                on_change=lambda e: on_toggle(e.control.value),
-                            ),
+                            switch,
                         ],
                     ),
                     content,
@@ -950,123 +1109,30 @@ class GraphCanvas(ft.Container):
             ),
         )
 
-    def _build_tags_popup(self) -> ft.Control:
-        """A PopupMenuButton (Post-24 fix #1) rather than an inline wrapping
-        row -- the tag list has no natural bound on length, and an inline
-        row had nothing to wrap *within*, which was the actual cause of the
-        panel stretching across the graph. The popup's own content is a
-        fixed-size scrollable box, so however many tags exist, the popup
-        itself never grows past it.
-        """
-        tags = self._all_tags()
-        count = len(self._filter_tags)
-        trigger_label = f"Tags ({count})" if count else "Tags"
-        if tags:
-            popup_content: ft.Control = ft.Container(
-                width=220,
-                height=200,
-                padding=8,
-                content=ft.Column(
-                    scroll=ft.ScrollMode.AUTO,
-                    controls=[
-                        ft.Row(
-                            wrap=True,
-                            spacing=4,
-                            run_spacing=4,
-                            controls=[self._build_tag_chip(tag) for tag in tags],
-                        )
-                    ],
-                ),
-            )
-        else:
-            popup_content = ft.Container(
-                width=220,
-                padding=8,
-                content=ft.Text("No tags yet", size=10, color=theme.TEXT_MUTED),
-            )
-        return ft.PopupMenuButton(
-            disabled=not self._filter_tags_enabled,
-            content=ft.Container(
-                padding=ft.Padding(8, 5, 8, 5),
-                bgcolor=theme.CARD_BG,
-                border=ft.Border.all(1, theme.BORDER_STRONG),
-                border_radius=6,
-                content=ft.Text(trigger_label, size=10.5, color=theme.TEXT_TOGGLE_OFF),
-            ),
-            items=[ft.PopupMenuItem(content=popup_content)],
-        )
-
     def _build_filters_section(self) -> ft.Control:
-        type_content = ft.Column(
-            spacing=2,
-            controls=[
-                ft.Row(
-                    spacing=4,
-                    controls=[
-                        ft.Checkbox(
-                            value=type_key in self._filter_types,
-                            fill_color=color,
-                            disabled=not self._filter_types_enabled,
-                            on_change=(
-                                lambda e, t=type_key: self._on_filter_type_changed(
-                                    t, e.control.value
-                                )
-                            ),
-                        ),
-                        ft.Text(label, size=10.5, color=theme.TEXT_TOGGLE_OFF),
-                    ],
-                )
-                for type_key, label, color in _FILTER_NOTE_TYPES
-            ],
+        self._master_switch = ft.Switch(
+            value=self._filters_enabled,
+            on_change=lambda e: self._on_filter_master_toggled(e.control.value),
         )
-
-        search_content = ft.TextField(
-            value=self._filter_search,
-            hint_text="Search notes…",
-            height=34,
-            text_size=11,
-            disabled=not self._filter_search_enabled,
-            content_padding=ft.Padding(8, 4, 8, 4),
-            on_change=lambda e: self._on_filter_search_changed(e.control.value),
+        self._types_switch = ft.Switch(
+            value=self._filter_types_enabled,
+            on_change=lambda e: self._on_filter_types_enabled_toggled(e.control.value),
         )
-
-        date_content = ft.Row(
-            spacing=6,
-            controls=[
-                self._build_date_button(
-                    "From",
-                    self._filter_date_from,
-                    lambda e: self._page.show_dialog(self._date_picker_from),
-                    disabled=not self._filter_date_enabled,
-                ),
-                self._build_date_button(
-                    "To",
-                    self._filter_date_to,
-                    lambda e: self._page.show_dialog(self._date_picker_to),
-                    disabled=not self._filter_date_enabled,
-                ),
-            ],
+        self._tags_switch = ft.Switch(
+            value=self._filter_tags_enabled,
+            on_change=lambda e: self._on_filter_tags_enabled_toggled(e.control.value),
         )
-
-        degrees_caption = (
-            "Applies once you select a node"
-            if self._selected is None
-            else f"Within {self._filter_degrees} hop(s) of the selection"
+        self._search_switch = ft.Switch(
+            value=self._filter_search_enabled,
+            on_change=lambda e: self._on_filter_search_enabled_toggled(e.control.value),
         )
-        degrees_content = ft.Column(
-            spacing=2,
-            controls=[
-                ft.Text(degrees_caption, size=10, color=theme.TEXT_MUTED),
-                ft.Slider(
-                    min=1,
-                    max=5,
-                    divisions=4,
-                    value=self._filter_degrees,
-                    label="{value}",
-                    disabled=not self._filter_degrees_enabled,
-                    on_change=lambda e: self._on_filter_degrees_changed(int(e.control.value)),
-                ),
-            ],
+        self._date_switch = ft.Switch(
+            value=self._filter_date_enabled,
+            on_change=lambda e: self._on_filter_date_enabled_toggled(e.control.value),
+        )
+        self._degrees_switch = ft.Switch(
+            value=self._filter_degrees_enabled,
+            on_change=lambda e: self._on_filter_degrees_enabled_toggled(e.control.value),
         )
 
         return ft.Column(
@@ -1081,41 +1147,23 @@ class GraphCanvas(ft.Container):
                             weight=ft.FontWeight.W_600,
                             color=theme.TEXT,
                         ),
-                        ft.Switch(
-                            value=self._filters_enabled,
-                            on_change=lambda e: self._on_filter_master_toggled(e.control.value),
-                        ),
+                        self._master_switch,
                     ],
                 ),
                 self._build_filter_section_box(
-                    "Type",
-                    self._filter_types_enabled,
-                    self._on_filter_types_enabled_toggled,
-                    type_content,
+                    "Type", self._types_switch, self._build_type_content()
                 ),
                 self._build_filter_section_box(
-                    "Tags",
-                    self._filter_tags_enabled,
-                    self._on_filter_tags_enabled_toggled,
-                    self._build_tags_popup(),
+                    "Tags", self._tags_switch, self._build_tags_popup()
                 ),
                 self._build_filter_section_box(
-                    "Search",
-                    self._filter_search_enabled,
-                    self._on_filter_search_enabled_toggled,
-                    search_content,
+                    "Search", self._search_switch, self._build_search_content()
                 ),
                 self._build_filter_section_box(
-                    "Date",
-                    self._filter_date_enabled,
-                    self._on_filter_date_enabled_toggled,
-                    date_content,
+                    "Date", self._date_switch, self._build_date_content()
                 ),
                 self._build_filter_section_box(
-                    "Degrees from Selected",
-                    self._filter_degrees_enabled,
-                    self._on_filter_degrees_enabled_toggled,
-                    degrees_content,
+                    "Degrees from Selected", self._degrees_switch, self._build_degrees_content()
                 ),
                 ft.Container(
                     padding=ft.Padding(9, 5, 9, 5),
@@ -1128,14 +1176,51 @@ class GraphCanvas(ft.Container):
             ],
         )
 
-    def _rebuild_settings_panel(self) -> None:
-        self._settings_panel.content = self._build_settings_panel_content()
+    def _sync_filter_controls_to_state(self) -> None:
+        """Mutates every stored control from `self._filter_*`/`self._filters_*`
+        -- used by `set_filters()` (persisted-settings sync) and
+        `_on_filters_reset()`. Same "mutate, don't rebuild" discipline as
+        every single-control handler, just applied in bulk.
+        """
+        for type_key, checkbox in self._type_checkboxes.items():
+            checkbox.value = type_key in self._filter_types
+            with contextlib.suppress(RuntimeError):
+                checkbox.update()
+        for tag in self._tag_chip_controls:
+            self._style_tag_chip(tag)
+        self._tags_trigger_label.value = self._tags_trigger_text()
         with contextlib.suppress(RuntimeError):
-            self._settings_panel.update()
+            self._tags_trigger_label.update()
+        self._search_field.value = self._filter_search
+        with contextlib.suppress(RuntimeError):
+            self._search_field.update()
+        self._date_from_label.value = f"From: {self._filter_date_from or 'Any'}"
+        self._date_to_label.value = f"To: {self._filter_date_to or 'Any'}"
+        with contextlib.suppress(RuntimeError):
+            self._date_from_label.update()
+            self._date_to_label.update()
+        self._degrees_slider.value = self._filter_degrees
+        self._degrees_caption.value = self._degrees_caption_text()
+        with contextlib.suppress(RuntimeError):
+            self._degrees_slider.update()
+            self._degrees_caption.update()
+        self._master_switch.value = self._filters_enabled
+        self._types_switch.value = self._filter_types_enabled
+        self._tags_switch.value = self._filter_tags_enabled
+        self._search_switch.value = self._filter_search_enabled
+        self._date_switch.value = self._filter_date_enabled
+        self._degrees_switch.value = self._filter_degrees_enabled
+        with contextlib.suppress(RuntimeError):
+            self._master_switch.update()
+            self._types_switch.update()
+            self._tags_switch.update()
+            self._search_switch.update()
+            self._date_switch.update()
+            self._degrees_switch.update()
 
     def _toggle_settings_panel(self, e=None) -> None:
         self._settings_panel_expanded = not self._settings_panel_expanded
-        self._rebuild_settings_panel()
+        self._apply_panel_expanded_state()
         if self.on_settings_panel_toggled is not None:
             self.on_settings_panel_toggled(self._settings_panel_expanded)
 
@@ -1148,7 +1233,18 @@ class GraphCanvas(ft.Container):
         if expanded == self._settings_panel_expanded:
             return
         self._settings_panel_expanded = expanded
-        self._rebuild_settings_panel()
+        self._apply_panel_expanded_state()
+
+    def _apply_panel_expanded_state(self) -> None:
+        """Mutates the body's visibility and the chevron glyph in place --
+        Post-24 fix #3: expand/collapse never reassigns
+        `self._settings_panel.content`, only these two controls.
+        """
+        self._panel_body.visible = self._settings_panel_expanded
+        self._panel_chevron.value = "▾" if self._settings_panel_expanded else "▸"
+        with contextlib.suppress(RuntimeError):
+            self._panel_body.update()
+            self._panel_chevron.update()
 
     # --- Filters (Phase 24) --------------------------------------------------
 
@@ -1168,29 +1264,23 @@ class GraphCanvas(ft.Container):
             degrees_enabled=self._filter_degrees_enabled,
         )
 
-    def _apply_filter_change(self, rebuild_panel: bool = True) -> None:
+    def _apply_filter_change(self) -> None:
         """Common tail for every filter control's own handler: clears
         selection if it's no longer visible under the new filters, redraws
         the graph, and -- only here, not from `set_filters()` -- fires
         `on_filters_changed` so the caller can persist it.
 
-        `rebuild_panel` defaults `True` for discrete, one-shot interactions
-        (checkbox/chip/date-pick/switch/reset). The two *continuous*
-        interactions -- typing in Search, dragging the degrees Slider --
-        pass `False`: native Flet controls already reflect their own
-        live-edited state client-side, so rebuilding the panel's control
-        tree on every keystroke/drag-tick would push a redundant value
-        back to the client and reset its focus/gesture state (confirmed:
-        the same bug this project already root-caused once, Post-16d's
-        chat input field). The graph itself always redraws either way --
-        that's the whole point of a filter changing.
+        Post-24 fix #3: never touches the settings panel itself. Every
+        handler that calls this has already mutated its own control(s)
+        directly (a chip's own container, a date label, ...) or needs no
+        mutation at all (native Flet controls like Checkbox/Slider/Switch/
+        TextField already reflect their own edited state client-side) --
+        so there is nothing left for this shared tail to rebuild.
         """
         if self._selected is not None and not self._passes_filters(self._selected):
             self._selected = None
             self._update_info_overlay()
             self._degrees_from_selected = {}
-        if rebuild_panel:
-            self._rebuild_settings_panel()
         self._redraw_all()
         if self.on_filters_changed is not None:
             self.on_filters_changed(self._current_filter_state())
@@ -1207,11 +1297,15 @@ class GraphCanvas(ft.Container):
             self._filter_tags.discard(tag)
         else:
             self._filter_tags.add(tag)
+        self._style_tag_chip(tag)
+        self._tags_trigger_label.value = self._tags_trigger_text()
+        with contextlib.suppress(RuntimeError):
+            self._tags_trigger_label.update()
         self._apply_filter_change()
 
     def _on_filter_search_changed(self, value: str) -> None:
         self._filter_search = value
-        self._apply_filter_change(rebuild_panel=False)
+        self._apply_filter_change()
 
     @staticmethod
     def _to_date_string(value) -> str | None:
@@ -1227,15 +1321,24 @@ class GraphCanvas(ft.Container):
 
     def _on_filter_date_from_changed(self, value) -> None:
         self._filter_date_from = self._to_date_string(value)
+        self._date_from_label.value = f"From: {self._filter_date_from or 'Any'}"
+        with contextlib.suppress(RuntimeError):
+            self._date_from_label.update()
         self._apply_filter_change()
 
     def _on_filter_date_to_changed(self, value) -> None:
         self._filter_date_to = self._to_date_string(value)
+        self._date_to_label.value = f"To: {self._filter_date_to or 'Any'}"
+        with contextlib.suppress(RuntimeError):
+            self._date_to_label.update()
         self._apply_filter_change()
 
     def _on_filter_degrees_changed(self, value: int) -> None:
         self._filter_degrees = value
-        self._apply_filter_change(rebuild_panel=False)
+        self._degrees_caption.value = self._degrees_caption_text()
+        with contextlib.suppress(RuntimeError):
+            self._degrees_caption.update()
+        self._apply_filter_change()
 
     def _on_filter_master_toggled(self, enabled: bool) -> None:
         self._filters_enabled = enabled
@@ -1274,6 +1377,7 @@ class GraphCanvas(ft.Container):
         self._filter_search_enabled = True
         self._filter_date_enabled = True
         self._filter_degrees_enabled = False  # see __init__'s comment on why
+        self._sync_filter_controls_to_state()
         self._apply_filter_change()
 
     def set_filters(self, state: GraphFilterState) -> None:
@@ -1299,7 +1403,7 @@ class GraphCanvas(ft.Container):
             self._selected = None
             self._update_info_overlay()
             self._degrees_from_selected = {}
-        self._rebuild_settings_panel()
+        self._sync_filter_controls_to_state()
         self._redraw_all()
 
     def _build_zoom_controls(self) -> ft.Control:
