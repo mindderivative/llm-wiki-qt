@@ -226,7 +226,17 @@ class GraphCanvas(ft.Container):
                 (e.local_position.x - self._pan_x) / self._zoom,
                 (e.local_position.y - self._pan_y) / self._zoom,
             )
-            self._redraw()
+            # The simulation tick loop (started alongside any node-drag,
+            # see _start_simulation()) already redraws at a steady ~30fps.
+            # Redrawing again here on every raw pointer-move event roughly
+            # doubles how often the full shape list gets serialized across
+            # the Python<->Flutter boundary during a drag -- that
+            # serialization, not the physics math, is the real cost.
+            # Skip only when the loop is actually running; if it isn't
+            # (e.g. a graph reload mid-drag stopped it), fall back to
+            # redrawing directly so the drag never silently stops rendering.
+            if not self._sim_active:
+                self._redraw()
         elif self._panning:
             self._pan_x += e.local_delta.x
             self._pan_y += e.local_delta.y

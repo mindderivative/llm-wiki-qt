@@ -686,6 +686,38 @@ def test_a_plain_click_does_not_leave_the_simulation_running() -> None:
     assert canvas._positions["bystander"] == (430.0, 300.0)
 
 
+def test_pan_update_does_not_redraw_directly_while_the_simulation_is_running() -> None:
+    """Regression: the tick loop already redraws at ~30fps while a node-drag
+    is active (see _start_simulation()); a second, per-pointer-event redraw
+    on top of that roughly doubles how often the full shape list gets
+    serialized across the Python<->Flutter boundary during a drag.
+    """
+    canvas = _simulation_canvas()
+    _pan_start_at(canvas, 400.0, 300.0)  # starts the simulation (also redraws once, for selection)
+    assert canvas._sim_active is True
+    shapes_after_select = canvas._canvas.shapes
+
+    _pan_update_to(canvas, 500.0, 300.0, dx=100.0, dy=0.0)
+
+    # _redraw() always builds a fresh list -- the same object surviving
+    # proves _on_pan_update() didn't call it again.
+    assert canvas._canvas.shapes is shapes_after_select
+
+
+def test_pan_update_still_redraws_directly_if_the_simulation_is_not_running() -> None:
+    """Safety net for e.g. a graph reload stopping the simulation mid-drag
+    (set_graph() sets _sim_active = False but leaves _dragging alone) --
+    the drag must keep rendering even without the tick loop.
+    """
+    canvas = _simulation_canvas()
+    canvas._dragging = "anchor"  # dragging without going through _start_simulation()
+    assert canvas._sim_active is False
+
+    _pan_update_to(canvas, 500.0, 300.0, dx=100.0, dy=0.0)
+
+    assert canvas._canvas.shapes != []
+
+
 def test_set_graph_stops_an_in_flight_simulation() -> None:
     fake_page = _FakePage()
     try:
