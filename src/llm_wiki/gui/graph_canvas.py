@@ -80,12 +80,19 @@ def _category_of(slug: str) -> str:
 class GraphCanvas(ft.Container):
     """Interactive canvas visualizing the vault's `[[wikilink]]` network."""
 
-    def __init__(self, page: ft.Page, on_node_selected=None) -> None:
+    def __init__(
+        self, page: ft.Page, on_node_selected=None, on_settings_panel_toggled=None
+    ) -> None:
         super().__init__()
         self._page = page  # NOT self.page -- ft.Container reserves that name
         self.expand = True
         self.bgcolor = theme.CANVAS_BG
         self.on_node_selected = on_node_selected
+        # Phase 23 -- fired only on a genuine user click of the settings
+        # panel's toggle (never from set_settings_panel_expanded(), which
+        # syncs from persisted settings), so the caller can persist it.
+        self.on_settings_panel_toggled = on_settings_panel_toggled
+        self._settings_panel_expanded = True
 
         self._graph = nx.DiGraph()
         self._positions: dict[str, tuple[float, float]] = {}
@@ -138,10 +145,11 @@ class GraphCanvas(ft.Container):
             on_exit=self._on_exit,
         )
         self._info_overlay = self._build_info_overlay()
+        self._settings_panel = self._build_settings_panel()
         self.content = ft.Stack(
             controls=[
                 self._gestures,
-                self._build_legend(),
+                self._settings_panel,
                 self._build_zoom_controls(),
                 self._info_overlay,
             ],
@@ -607,7 +615,13 @@ class GraphCanvas(ft.Container):
         with contextlib.suppress(RuntimeError):
             self._hover_canvas.update()
 
-    def _build_legend(self) -> ft.Control:
+    # --- Settings panel (Phase 23) -------------------------------------------
+
+    def _build_settings_panel(self) -> ft.Control:
+        """Replaces the old always-on legend -- same slot/styling, now a
+        collapsible shell. The legend is today's only content; Filters and
+        Settings (later phases) will add more sections here.
+        """
         return ft.Container(
             left=14,
             top=12,
@@ -615,22 +629,75 @@ class GraphCanvas(ft.Container):
             bgcolor=theme.CHROME_BG,
             border=ft.Border.all(1, theme.BORDER),
             border_radius=8,
-            content=ft.Column(
-                spacing=5,
-                controls=[
-                    ft.Row(
-                        spacing=7,
-                        controls=[
-                            ft.Container(
-                                width=8, height=8, bgcolor=color, border_radius=4
-                            ),
-                            ft.Text(name.title(), size=10.5, color=theme.TEXT_TOGGLE_OFF),
-                        ],
-                    )
-                    for name, color in theme.CATEGORY_COLORS.items()
-                ],
-            ),
+            content=self._build_settings_panel_content(),
         )
+
+    def _build_settings_panel_content(self) -> ft.Control:
+        header = ft.Row(
+            spacing=6,
+            controls=[
+                ft.Text("⚙", size=12, color=theme.TEXT_TOGGLE_OFF),
+                ft.Text(
+                    "Settings", size=10.5, weight=ft.FontWeight.W_600, color=theme.TEXT
+                ),
+                ft.Container(width=24),  # spacer, pushes the toggle to the right
+                ft.Container(
+                    on_click=self._toggle_settings_panel,
+                    content=ft.Text(
+                        "▾" if self._settings_panel_expanded else "▸",
+                        size=11,
+                        color=theme.TEXT_TOGGLE_OFF,
+                    ),
+                ),
+            ],
+        )
+        if not self._settings_panel_expanded:
+            return header
+        return ft.Column(
+            spacing=8,
+            controls=[
+                header,
+                ft.Column(
+                    spacing=5,
+                    controls=[
+                        ft.Row(
+                            spacing=7,
+                            controls=[
+                                ft.Container(
+                                    width=8, height=8, bgcolor=color, border_radius=4
+                                ),
+                                ft.Text(
+                                    name.title(), size=10.5, color=theme.TEXT_TOGGLE_OFF
+                                ),
+                            ],
+                        )
+                        for name, color in theme.CATEGORY_COLORS.items()
+                    ],
+                ),
+            ],
+        )
+
+    def _rebuild_settings_panel(self) -> None:
+        self._settings_panel.content = self._build_settings_panel_content()
+        with contextlib.suppress(RuntimeError):
+            self._settings_panel.update()
+
+    def _toggle_settings_panel(self, e=None) -> None:
+        self._settings_panel_expanded = not self._settings_panel_expanded
+        self._rebuild_settings_panel()
+        if self.on_settings_panel_toggled is not None:
+            self.on_settings_panel_toggled(self._settings_panel_expanded)
+
+    def set_settings_panel_expanded(self, expanded: bool) -> None:
+        """Syncs the panel from persisted settings -- called once after
+        construction and again on every vault switch (a different vault
+        may have a different saved preference). Never fires
+        `on_settings_panel_toggled`; that's only for genuine user clicks.
+        """
+        if expanded == self._settings_panel_expanded:
+            return
+        self._settings_panel_expanded = expanded
+        self._rebuild_settings_panel()
 
     def _build_zoom_controls(self) -> ft.Control:
         def button(label: str, on_click, size: float) -> ft.Control:

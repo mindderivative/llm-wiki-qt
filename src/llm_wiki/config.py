@@ -64,6 +64,14 @@ class VaultConfig(BaseModel):
     auto_watch_raw: bool = True
 
 
+class GraphViewConfig(BaseModel):
+    """Persisted graph canvas view preferences (Phase 23)."""
+
+    # Defaults to expanded so the category-color legend stays visible out
+    # of the box, matching the pre-Phase-23 always-on behavior.
+    settings_panel_expanded: bool = True
+
+
 class AppSettings(BaseSettings):
     """Top-level application configuration; construct via `AppSettings.load()`."""
 
@@ -77,6 +85,7 @@ class AppSettings(BaseSettings):
     llm_provider: LLMProviderConfig = Field(default_factory=LLMProviderConfig)
     mcp_server: MCPServerConfig = Field(default_factory=MCPServerConfig)
     vault: VaultConfig = Field(default_factory=VaultConfig)
+    graph_view: GraphViewConfig = Field(default_factory=GraphViewConfig)
 
     @classmethod
     def load(cls, config_path: Path | str | None = None) -> AppSettings:
@@ -128,6 +137,7 @@ class AppSettings(BaseSettings):
         existing["llm_provider"] = self.llm_provider.model_dump(mode="json")
         existing["mcp_server"] = self.mcp_server.model_dump(mode="json")
         existing["vault"] = self.vault.model_dump(mode="json")
+        existing["graph_view"] = self.graph_view.model_dump(mode="json")
 
         config_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
         logger.info(f"Settings saved to {config_path}")

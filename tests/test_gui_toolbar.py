@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import openai
 import pytest
 
+from llm_wiki.config import AppSettings
 from llm_wiki.gui.app import Shell
 from llm_wiki.gui.app_controller import AppController
 from llm_wiki.gui.pipeline_adapter import PipelineAdapter
@@ -314,6 +315,29 @@ def test_on_run_finished_does_not_blank_the_completed_status(page):
     assert shell.status_file.value == "doc"
     assert shell.progress_bar.value == 1
     assert shell.progress_label.value == "100%"
+
+
+def test_graph_settings_panel_toggle_is_a_no_op_without_a_vault(page):
+    shell = Shell(page)
+
+    shell._on_graph_settings_panel_toggled(False)  # must not raise
+
+    assert shell.controller.settings.graph_view.settings_panel_expanded is True
+
+
+def test_graph_settings_panel_toggle_persists_when_a_vault_is_open(page, vault_root: Path):
+    shell = Shell(page)
+
+    try:
+        _on_loop(page, shell.controller.open_vault, vault_root)
+
+        shell._on_graph_settings_panel_toggled(False)
+
+        assert shell.controller.settings.graph_view.settings_panel_expanded is False
+        reloaded = AppSettings.load(vault_root / ".llm-wiki-config")
+        assert reloaded.graph_view.settings_panel_expanded is False
+    finally:
+        shell.raw_watcher.stop()  # opening the vault started it (auto_watch_raw defaults on)
 
 
 def test_shell_wires_vault_open_through_a_real_pipeline_run(

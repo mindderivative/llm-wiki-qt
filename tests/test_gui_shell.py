@@ -542,6 +542,55 @@ def test_panning_empty_background_moves_the_view_not_the_nodes() -> None:
     assert canvas.node_positions == before  # untouched
 
 
+# --- Settings panel shell (Phase 23) -------------------------------------
+
+
+def test_settings_panel_defaults_to_expanded_with_the_legend_visible() -> None:
+    canvas = GraphCanvas(_page_stub())
+
+    content = canvas._settings_panel.content
+    assert isinstance(content, ft.Column)
+    # header + the legend column beneath it
+    assert len(content.controls) == 2
+
+
+def test_toggling_the_settings_panel_collapses_it_and_fires_the_callback() -> None:
+    seen: list[bool] = []
+    canvas = GraphCanvas(_page_stub(), on_settings_panel_toggled=seen.append)
+
+    canvas._toggle_settings_panel()
+
+    assert canvas._settings_panel_expanded is False
+    assert isinstance(canvas._settings_panel.content, ft.Row)  # header only
+    assert seen == [False]
+
+    canvas._toggle_settings_panel()
+
+    assert canvas._settings_panel_expanded is True
+    assert isinstance(canvas._settings_panel.content, ft.Column)
+    assert seen == [False, True]
+
+
+def test_set_settings_panel_expanded_syncs_without_firing_the_callback() -> None:
+    seen: list[bool] = []
+    canvas = GraphCanvas(_page_stub(), on_settings_panel_toggled=seen.append)
+
+    canvas.set_settings_panel_expanded(False)
+
+    assert canvas._settings_panel_expanded is False
+    assert isinstance(canvas._settings_panel.content, ft.Row)
+    assert seen == []  # syncing from settings is not a user toggle
+
+
+def test_set_settings_panel_expanded_is_a_no_op_for_the_same_value() -> None:
+    canvas = GraphCanvas(_page_stub())
+    content_before = canvas._settings_panel.content
+
+    canvas.set_settings_panel_expanded(True)  # already the default
+
+    assert canvas._settings_panel.content is content_before
+
+
 def test_selecting_a_node_shows_the_info_overlay() -> None:
     canvas = GraphCanvas(_page_stub())
     canvas._graph = _fixture_graph_with_attrs()

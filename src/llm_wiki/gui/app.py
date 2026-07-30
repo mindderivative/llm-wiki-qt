@@ -69,7 +69,9 @@ class Shell:
         self.controller = AppController()
         self.controller.subscribe(self._on_vault_changed)
 
-        self.graph = GraphCanvas(page)
+        self.graph = GraphCanvas(
+            page, on_settings_panel_toggled=self._on_graph_settings_panel_toggled
+        )
         self.file_picker = ft.FilePicker()
         # FilePicker is a Service, not a visual Control -- it belongs on
         # page.services (attached to the root view's service lifecycle), not
@@ -254,6 +256,9 @@ class Shell:
         self.pipeline_adapter.configure(self.controller.vault_path, client, llm.chat_model)
         self.chat_panel.configure(self.controller.vault_path, client, llm.chat_model)
         self.terminal_panel.configure(self.controller.vault_path)
+        self.graph.set_settings_panel_expanded(
+            self.controller.settings.graph_view.settings_panel_expanded
+        )
         self._sync_raw_watcher()
 
         self.page.title = (
@@ -263,6 +268,16 @@ class Shell:
         )
         self.toolbar.sync()
         self.page.update()
+
+    def _on_graph_settings_panel_toggled(self, expanded: bool) -> None:
+        """Persists the graph canvas Settings panel's expand/collapse state
+        (Phase 23) -- a no-op before any vault is open, since
+        `save_settings()` requires a vault path.
+        """
+        if not self.controller.has_vault:
+            return
+        self.controller.settings.graph_view.settings_panel_expanded = expanded
+        self.controller.save_settings()
 
     def _sync_raw_watcher(self) -> None:
         """(Re)targets the watcher at the active vault, respecting the

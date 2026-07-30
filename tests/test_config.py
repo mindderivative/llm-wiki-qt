@@ -132,3 +132,19 @@ def test_save_preserves_vault_identity_fields(tmp_path: Path) -> None:
     assert raw["vault_name"] == "My Vault"
     assert raw["domain_description"] == "A description."
     assert raw["llm_provider"]["chat_model"] == "qwen3-8b"
+
+
+def test_graph_view_defaults_to_settings_panel_expanded() -> None:
+    settings = AppSettings.load(None)
+    assert settings.graph_view.settings_panel_expanded is True
+
+
+def test_graph_view_round_trips_through_save(tmp_path: Path) -> None:
+    config_path = tmp_path / ".llm-wiki-config"
+    settings = AppSettings.load(None)
+    settings.graph_view.settings_panel_expanded = False
+
+    settings.save(config_path)
+    reloaded = AppSettings.load(config_path)
+
+    assert reloaded.graph_view.settings_panel_expanded is False
