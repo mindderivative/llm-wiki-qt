@@ -1507,14 +1507,22 @@ def test_dragging_the_gravity_well_still_moves_its_neighbors() -> None:
 
 
 def test_simulation_tick_eases_perturbed_nodes_back_to_home_after_release() -> None:
+    """Uses "bystander" (not "neighbor") -- Post-25 fix #2 changed what
+    happens to a *direct* neighbor on release: it's now permanently
+    repositioned near the dragged node's new spot (see
+    `_on_pan_end()`/`_neighbor_reposition_targets()`), not eased back to
+    its old home. A bystander (pulled in by repel, not a graph edge) is
+    untouched by that hand-off and still exhibits the original spring-
+    back-to-home behavior this test is actually about.
+    """
     canvas = _simulation_canvas()
     _pan_start_at(canvas, 400.0, 300.0)
     _pan_update_to(canvas, 500.0, 300.0, dx=100.0, dy=0.0)
     for _ in range(15):
         canvas._simulation_tick()
 
-    home = canvas._home_positions["neighbor"]
-    assert math.dist(canvas._positions["neighbor"], home) > graph_canvas._SIM_SETTLE_DIST_EPSILON
+    home = canvas._home_positions["bystander"]
+    assert math.dist(canvas._positions["bystander"], home) > graph_canvas._SIM_SETTLE_DIST_EPSILON
 
     _pan_end(canvas)
     assert canvas._dragging is None
@@ -1525,8 +1533,8 @@ def test_simulation_tick_eases_perturbed_nodes_back_to_home_after_release() -> N
             break
 
     assert canvas._sim_active is False
-    assert canvas._positions["neighbor"] == home
-    assert "neighbor" not in canvas._sim_active_nodes
+    assert canvas._positions["bystander"] == home
+    assert "bystander" not in canvas._sim_active_nodes
 
 
 def test_simulation_stops_at_the_safety_cap_even_if_unconverged() -> None:
@@ -1866,6 +1874,224 @@ def test_dragging_a_node_end_to_end_runs_and_settles_the_simulation() -> None:
         _wait_until(lambda: canvas._sim_active is False, timeout=10.0)
 
         assert canvas._positions["far"] == (900.0, 900.0)
+    finally:
+        fake_page.close()
+
+
+# --- Constant-velocity reposition (Post-25 fix #2) -------------------------
+
+
+def test_reposition_tick_moves_a_node_toward_its_target_at_constant_speed() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._positions = {"a": (0.0, 0.0)}
+    canvas._reposition_targets = {"a": (1000.0, 0.0)}
+
+    still_moving = canvas._reposition_tick()
+
+    expected_step = graph_canvas._REPOSITION_SPEED * graph_canvas._SIM_TICK_DT
+    assert canvas._positions["a"] == pytest.approx((expected_step, 0.0))
+    assert still_moving is True
+    assert "a" in canvas._reposition_targets
+
+
+def test_reposition_tick_snaps_exactly_once_within_the_settle_epsilon() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._positions = {"a": (99.0, 0.0)}
+    canvas._reposition_targets = {"a": (100.0, 0.0)}  # well under one tick's step
+
+    still_moving = canvas._reposition_tick()
+
+    assert canvas._positions["a"] == (100.0, 0.0)
+    assert still_moving is False
+    assert canvas._reposition_targets == {}
+
+
+def test_reposition_tick_skips_and_drops_a_node_currently_being_dragged() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._positions = {"a": (0.0, 0.0)}
+    canvas._reposition_targets = {"a": (1000.0, 0.0)}
+    canvas._dragging = "a"
+
+    still_moving = canvas._reposition_tick()
+
+    assert canvas._positions["a"] == (0.0, 0.0)  # untouched -- the live drag wins
+    assert still_moving is False
+    assert canvas._reposition_targets == {}  # dropped, not resumed later
+
+
+def test_start_reposition_merges_into_an_already_active_reposition() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._positions = {"a": (0.0, 0.0), "b": (0.0, 0.0)}
+
+    canvas._start_reposition({"a": (100.0, 0.0)})
+    assert canvas._reposition_active is True
+
+    canvas._start_reposition({"b": (200.0, 0.0)})
+
+    assert canvas._reposition_targets == {"a": (100.0, 0.0), "b": (200.0, 0.0)}
+
+
+def test_start_reposition_places_a_brand_new_node_directly_at_its_target() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._positions = {}
+
+    canvas._start_reposition({"new-node": (50.0, 60.0)})
+
+    assert canvas._positions["new-node"] == (50.0, 60.0)
+
+
+def test_neighbor_reposition_targets_lands_neighbors_near_the_anchor() -> None:
+    canvas = GraphCanvas(_page_stub())
+    graph = nx.DiGraph()
+    graph.add_edge("n1", "anchor")
+    graph.add_edge("n2", "anchor")
+    graph.add_edge("n3", "anchor")
+    canvas._graph = graph
+    canvas._positions = {
+        "anchor": (500.0, 500.0),
+        "n1": (0.0, 0.0),
+        "n2": (0.0, 0.0),
+        "n3": (0.0, 0.0),
+    }
+
+    targets = canvas._neighbor_reposition_targets("anchor")
+
+    assert set(targets) == {"n1", "n2", "n3"}
+    anchor_pos = canvas._positions["anchor"]
+    for pos in targets.values():
+        dist = math.dist(pos, anchor_pos)
+        assert dist == pytest.approx(graph_canvas._SIM_NEIGHBOR_REST_LENGTH, rel=0.15)
+    values = list(targets.values())
+    min_pairwise = min(
+        math.dist(a, b) for i, a in enumerate(values) for b in values[i + 1 :]
+    )
+    assert min_pairwise > 2 * graph_canvas._NODE_RADIUS
+
+
+def test_neighbor_reposition_targets_excludes_the_gravity_well() -> None:
+    canvas = GraphCanvas(_page_stub())
+    graph = nx.DiGraph()
+    graph.add_edge("leaf", "index")
+    graph.add_edge("n1", "leaf")  # leaf's own neighbor set: index, n1
+    canvas._graph = graph
+    canvas._positions = {"leaf": (0.0, 0.0), "index": (0.0, 0.0), "n1": (10.0, 10.0)}
+
+    targets = canvas._neighbor_reposition_targets("leaf")
+
+    assert "index" not in targets
+    assert "n1" in targets
+
+
+def test_neighbor_reposition_targets_ignores_non_neighbors() -> None:
+    canvas = GraphCanvas(_page_stub())
+    graph = nx.DiGraph()
+    graph.add_edge("n1", "anchor")
+    graph.add_node("unrelated")
+    canvas._graph = graph
+    canvas._positions = {"anchor": (0.0, 0.0), "n1": (10.0, 0.0), "unrelated": (500.0, 500.0)}
+
+    targets = canvas._neighbor_reposition_targets("anchor")
+
+    assert set(targets) == {"n1"}
+
+
+def test_neighbor_reposition_targets_stays_clear_of_overlap_at_high_neighbor_count() -> None:
+    canvas = GraphCanvas(_page_stub())
+    graph = nx.DiGraph()
+    for i in range(60):
+        graph.add_edge(f"n{i}", "anchor")
+    canvas._graph = graph
+    canvas._positions = {"anchor": (0.0, 0.0)} | {f"n{i}": (0.0, 0.0) for i in range(60)}
+
+    targets = canvas._neighbor_reposition_targets("anchor")
+
+    values = list(targets.values())
+    min_pairwise = min(
+        math.dist(a, b) for i, a in enumerate(values) for b in values[i + 1 :]
+    )
+    assert min_pairwise > 2 * graph_canvas._NODE_RADIUS
+
+
+def test_pan_end_starts_a_reposition_for_direct_neighbors_and_hands_off_from_the_simulation() -> (
+    None
+):
+    canvas = _simulation_canvas()
+    _pan_start_at(canvas, 400.0, 300.0)  # hits "anchor"
+    _pan_update_to(canvas, 500.0, 300.0, dx=100.0, dy=0.0)
+    canvas._simulation_tick()  # populates _sim_active_nodes/_sim_velocities
+    assert "neighbor" in canvas._sim_active_nodes
+
+    _pan_end(canvas)
+
+    assert canvas._reposition_active is True
+    assert "neighbor" in canvas._reposition_targets
+    assert "neighbor" not in canvas._sim_active_nodes
+    assert "neighbor" not in canvas._sim_velocities
+
+
+def test_pan_end_leaves_a_bystander_on_the_old_spring_back_path() -> None:
+    canvas = _simulation_canvas()
+    _pan_start_at(canvas, 400.0, 300.0)
+    _pan_update_to(canvas, 500.0, 300.0, dx=100.0, dy=0.0)
+    canvas._simulation_tick()  # populates _sim_active_nodes
+    assert "bystander" in canvas._sim_active_nodes
+
+    _pan_end(canvas)
+
+    assert "bystander" not in canvas._reposition_targets
+    assert "bystander" in canvas._sim_active_nodes
+
+
+def test_pan_end_does_not_reposition_when_simulation_is_disabled() -> None:
+    canvas = _simulation_canvas()
+    canvas._simulation_enabled = False
+    canvas._dragging = "anchor"  # bypasses _start_simulation()'s own early-return
+
+    _pan_end(canvas)
+
+    assert canvas._reposition_active is False
+    assert canvas._reposition_targets == {}
+
+
+def test_set_graph_cancels_an_in_flight_reposition() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._positions = {"a": (0.0, 0.0)}
+    canvas._start_reposition({"a": (1000.0, 0.0)})
+    assert canvas._reposition_active is True
+
+    canvas.set_graph(nx.DiGraph())
+
+    assert canvas._reposition_active is False
+    assert canvas._reposition_targets == {}
+
+
+def test_node_spacing_change_end_animates_rather_than_snaps() -> None:
+    """Exercises the real `page.run_thread()` -> `page.run_task()` ->
+    reposition-loop path end to end, matching
+    `test_set_graph_computes_layout_on_a_worker_thread`'s own precedent --
+    confirms `_reposition_active` genuinely goes through a live, running
+    phase (not an instant flip straight to settled) and that positions
+    land on the freshly computed layout at the new spacing once it does.
+    """
+    fake_page = _FakePage()
+    try:
+        canvas = GraphCanvas(fake_page)
+        canvas._graph = _fixture_graph()
+        canvas._compute_layout()
+        _wait_until(lambda: canvas.node_positions != {})
+        canvas._node_spacing = 8.0  # a real, different layout to animate toward
+        expected_final = canvas._layout_positions()
+
+        canvas._on_node_spacing_change_end()
+
+        _wait_until(lambda: canvas._reposition_active is True)
+        # Reached mid-flight while genuinely active -- proof this eases in
+        # via the loop rather than the target landing being instant.
+        assert canvas.node_positions != expected_final
+
+        _wait_until(lambda: canvas._reposition_active is False, timeout=10.0)
+
+        assert canvas.node_positions == expected_final
     finally:
         fake_page.close()
 

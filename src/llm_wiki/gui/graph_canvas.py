@@ -70,6 +70,17 @@ _SIM_MAX_SPEED = 900.0  # px/sec, hard clamp -- guarantees stability
 _SIM_SETTLE_DIST_EPSILON = 2.0  # px; below this + anchor released = at rest
 _SIM_SETTLE_MAX_TICKS = 90  # safety cap (~3s) so the loop always terminates
 
+# Post-25 fix #2 -- a separate, deliberately simpler movement system for
+# repositioning nodes toward a *known, fixed* destination (a fresh Node
+# Spacing layout, or a neighbor's new resting spot after a drag) rather
+# than reacting to a live anchor -- constant-velocity (distance ->
+# normalized direction), not spring-damped, since none of
+# _simulation_tick()'s overshoot/damping tuning applies without a moving
+# target to react to. Starting values, same "tune against the real UI"
+# framing as the _SIM_* constants above.
+_REPOSITION_SPEED = 300.0  # px/sec, constant
+_REPOSITION_SETTLE_DIST_EPSILON = 1.5  # px; below this, snap exactly and stop
+
 # Post-22 fix -- every note is guaranteed to backlink to [[index]] (Phase
 # 18's Related-block), so it's structurally the hub of this graph. Pinning
 # it at the canvas center keeps the graph organized and stops it from
@@ -285,6 +296,12 @@ class GraphCanvas(ft.Container):
         # tick, so _simulation_tick() can report whether it changed.
         self._prev_dynamic_slugs: set[str] = set()
 
+        # Post-25 fix #2 -- constant-velocity reposition toward a known,
+        # fixed destination (a fresh Node Spacing layout, or a neighbor's
+        # new resting spot after a drag); see _reposition_tick().
+        self._reposition_targets: dict[str, tuple[float, float]] = {}
+        self._reposition_active = False
+
         # Two layered canvases (Post-22 fix), not one: during a drag, only
         # the small _dynamic_canvas needs to be rebuilt+diffed+sent at
         # ~30fps -- the bulk of the graph on _static_canvas stays untouched.
@@ -337,8 +354,11 @@ class GraphCanvas(ft.Container):
     def set_graph(self, graph: nx.DiGraph) -> None:
         """Displays `graph`, computing its layout on a worker thread."""
         # A full reload replaces `self._positions` wholesale -- stop any
-        # in-flight simulation so it doesn't fight the fresh layout.
+        # in-flight simulation or reposition (Post-25 fix #2) so neither
+        # fights the fresh, instantly-landed layout.
         self._sim_active = False
+        self._reposition_active = False
+        self._reposition_targets = {}
         self._graph = graph.copy()
         self._page.run_thread(self._layout_worker)
 
@@ -408,6 +428,22 @@ class GraphCanvas(ft.Container):
         # is the one place the popup's chip set gets rebuilt.
         self._refresh_tag_popup()
         self._redraw_all()
+
+    def _layout_worker_animated(self) -> None:
+        """Like `_layout_worker()`, but the resulting positions are eased
+        into via the constant-velocity reposition system (Post-25 fix #2)
+        instead of snapped instantly -- used only for a Node Spacing
+        change, which (unlike `set_graph()`'s brand-new-graph load) has
+        real "before" positions worth animating from.
+        """
+        positions = self._layout_positions()
+        self._page.run_task(self._apply_positions_animated, positions)
+
+    async def _apply_positions_animated(self, positions: dict[str, tuple[float, float]]) -> None:
+        # Unlike _apply_positions(), no _refresh_tag_popup() call -- a
+        # spacing change relayouts the *same* graph, so the tag vocabulary
+        # can't have changed.
+        self._start_reposition(positions)
 
     def _to_canvas(self, x: float, y: float) -> tuple[float, float]:
         """Maps a spring-layout vector (roughly -1..1) into canvas pixels."""
@@ -486,8 +522,26 @@ class GraphCanvas(ft.Container):
             self._redraw_all()
 
     def _on_pan_end(self, e: ft.DragEndEvent) -> None:
+        moved_node = self._dragging
         self._dragging = None
         self._panning = False
+        # Post-25 fix #2: a permanently-moved node carries its direct
+        # neighbors along to a new resting spot, gated behind Physics/
+        # Animation's "Enable Simulation" switch -- consistent, not just
+        # convenient: _start_simulation() already no-ops when it's off, so
+        # with physics disabled a dragged node's neighbors never moved in
+        # the first place and there's nothing to permanently reposition.
+        if moved_node is not None and self._simulation_enabled:
+            targets = self._neighbor_reposition_targets(moved_node)
+            if targets:
+                # Hands control to the reposition system -- Phase 22's own
+                # spring-back-to-old-home simulation must stop touching
+                # these nodes, or the two would fight over where they end
+                # up.
+                self._sim_active_nodes -= targets.keys()
+                for slug in targets:
+                    self._sim_velocities.pop(slug, None)
+                self._start_reposition(targets)
         # The hover label may have been following the just-released node
         # (see _build_hover_shapes()) -- re-evaluate now that dragging has
         # stopped, so it correctly falls back to self._hovered (or clears,
@@ -634,6 +688,131 @@ class GraphCanvas(ft.Container):
         changed = current_dynamic != self._prev_dynamic_slugs
         self._prev_dynamic_slugs = current_dynamic
         return changed
+
+    # --- Constant-velocity reposition (Post-25 fix #2) ------------------------
+    #
+    # A separate, deliberately simpler movement system from the spring-mass
+    # simulation above: it moves nodes toward a *known, fixed* destination
+    # (a fresh Node Spacing layout, or a neighbor's new resting spot after
+    # a drag), not a live anchor -- so there's no overshoot/damping to tune,
+    # just distance -> a normalized direction -> a constant-speed step.
+
+    def _reposition_tick(self) -> bool:
+        """One constant-velocity step for every node in
+        `self._reposition_targets`. Pure enough to unit test directly, same
+        `_simulation_tick()`-style split from the async loop that drives it.
+
+        Returns whether any node is still moving (the loop-continuation
+        signal) -- nodes that reach their target, or that are currently
+        being dragged, are dropped from `self._reposition_targets` and
+        don't count.
+        """
+        still_moving: dict[str, tuple[float, float]] = {}
+        step = _REPOSITION_SPEED * _SIM_TICK_DT
+        for slug, target in self._reposition_targets.items():
+            if slug == self._dragging:
+                continue  # a live drag always wins; its target is dropped, not resumed later
+            current = self._positions.get(slug)
+            if current is None:
+                continue
+            dx, dy = target[0] - current[0], target[1] - current[1]
+            distance = math.hypot(dx, dy)
+            if distance <= _REPOSITION_SETTLE_DIST_EPSILON or step >= distance:
+                self._positions[slug] = target
+                continue
+            self._positions[slug] = (
+                current[0] + dx / distance * step,
+                current[1] + dy / distance * step,
+            )
+            still_moving[slug] = target
+        self._reposition_targets = still_moving
+        return bool(still_moving)
+
+    async def _reposition_loop(self) -> None:
+        # No static/dynamic canvas-split integration -- a full _redraw_all()
+        # every tick. Post-22's split solved a continuous, redundant-redraw
+        # problem specific to an active drag; here there's exactly one
+        # redraw source per tick (already measured cheap, ~2ms even at 150
+        # shapes) and this is a rare, short-lived event, not a 30fps-for-
+        # seconds one.
+        while self._reposition_active:
+            still_moving = self._reposition_tick()
+            self._redraw_all()
+            if not still_moving:
+                break
+            await asyncio.sleep(_SIM_TICK_DT)
+        self._reposition_active = False
+
+    def _start_reposition(self, targets: dict[str, tuple[float, float]]) -> None:
+        """Merges `targets` into any already-in-flight reposition (so a
+        second call -- e.g. a neighbor reposition landing while a spacing-
+        change reposition is still settling -- extends the same loop rather
+        than stomping it) and (re)starts the tick loop if it isn't already
+        running.
+        """
+        for slug, target in targets.items():
+            # A brand-new node starts exactly at its target -- nothing to
+            # move it from.
+            self._positions.setdefault(slug, target)
+        self._reposition_targets.update(targets)
+        if not self._reposition_active:
+            self._reposition_active = True
+            self._page.run_task(self._reposition_loop)
+
+    def _neighbor_reposition_targets(self, anchor: str) -> dict[str, tuple[float, float]]:
+        """After `anchor`'s position permanently changed (a drag just
+        ended), computes new resting positions for its direct graph
+        neighbors via a small local `spring_layout` pass over `anchor` +
+        its neighbors, anchored at `anchor`'s real (already-dragged-to)
+        position -- the same "let spring_layout's own force balance do the
+        placement" principle `_layout_positions()` already uses for the
+        gravity well, just scoped to a tiny local subgraph. The gravity
+        well itself is excluded as a possible neighbor target -- never
+        repositioned by anything except being directly dragged itself,
+        same rule `_simulation_tick()` already enforces.
+        """
+        if anchor not in self._graph or anchor not in self._positions:
+            return {}
+        neighbors = (
+            set(self._graph.predecessors(anchor)) | set(self._graph.successors(anchor))
+        ) - {_GRAVITY_WELL_SLUG, anchor}
+        neighbors &= self._positions.keys()
+        if not neighbors:
+            return {}
+
+        local_graph = nx.Graph()
+        local_graph.add_node(anchor)
+        for slug in neighbors:
+            local_graph.add_edge(anchor, slug)
+
+        # More neighbors need more room on the ring, not a denser pack at
+        # the same radius -- verified directly (a synthetic 60-neighbor
+        # case, matching a heavily-backlinked node like index) that a
+        # fixed radius regardless of count crowds neighbors under the
+        # no-overlap floor by ~60; scaling the radius with sqrt(neighbor
+        # count) -- the same principle _layout_scale() already uses for
+        # the whole graph -- keeps them comfortably clear.
+        rest = _SIM_NEIGHBOR_REST_LENGTH * max(1.0, (len(neighbors) / 6) ** 0.5)
+        k = max(1.0, len(neighbors) ** 0.5)
+        local_pos = nx.spring_layout(
+            local_graph, k=k, iterations=50, seed=42, pos={anchor: (0.0, 0.0)}, fixed=[anchor]
+        )
+        # spring_layout with fixed= skips its own auto-rescale (the same
+        # Post-18 finding _layout_positions() already works around) --
+        # here that means raw output distances have no reliable
+        # real-world scale at all (verified directly: a fixed k=1.0
+        # produced only ~2-3 units of spread regardless of k's
+        # magnitude), so this rescales to the *average* neighbor distance
+        # explicitly rather than trusting k's absolute value.
+        distances = [math.hypot(*local_pos[slug]) for slug in neighbors]
+        avg_distance = sum(distances) / len(distances) if distances else 1.0
+        scale = rest / avg_distance if avg_distance > 0 else 1.0
+
+        anchor_x, anchor_y = self._positions[anchor]
+        return {
+            slug: (anchor_x + local_pos[slug][0] * scale, anchor_y + local_pos[slug][1] * scale)
+            for slug in neighbors
+        }
 
     def _notify_selection(self) -> None:
         if self.on_node_selected is not None:
@@ -1628,11 +1807,13 @@ class GraphCanvas(ft.Container):
 
     def _on_node_spacing_change_end(self, e=None) -> None:
         """Fires once, when the drag gesture completes -- the actual
-        relayout. Reuses `_layout_worker()`/`_apply_positions()` verbatim,
-        the exact off-thread-compute-then-run_task-back path `set_graph()`
-        already established, not a new mechanism.
+        relayout. Reuses `_layout_worker_animated()`'s off-thread-compute-
+        then-run_task-back path (the exact mechanism `set_graph()`
+        established for `_layout_worker()`), landing the result via the
+        constant-velocity reposition system (Post-25 fix #2) instead of
+        snapping instantly.
         """
-        self._page.run_thread(self._layout_worker)
+        self._page.run_thread(self._layout_worker_animated)
         self._apply_display_settings_change()
 
     def _sync_display_controls_to_state(self) -> None:
@@ -1696,9 +1877,10 @@ class GraphCanvas(ft.Container):
         self._node_spacing = state.node_spacing
         self._sync_display_controls_to_state()
         if spacing_changed:
-            # A layout input actually changed -- relayout, the same path
-            # the live Node Spacing slider's on_change_end triggers.
-            self._page.run_thread(self._layout_worker)
+            # A layout input actually changed -- relayout, the same
+            # animated path the live Node Spacing slider's on_change_end
+            # triggers (Post-25 fix #2).
+            self._page.run_thread(self._layout_worker_animated)
         else:
             self._redraw_all()
 
