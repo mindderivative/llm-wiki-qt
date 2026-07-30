@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "flet-charts>=0.86.4",
+    "flet-terminal>=0.2.2",
     "flet[cli,desktop]>=0.86.4",
     "loguru>=0.7.3",
     "markdown-it-py>=4.2.0",

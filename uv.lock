@@ -423,6 +423,18 @@ wheels = [
 ]
 
 [[package]]
+name = "flet-terminal"
+version = "0.2.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "flet" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e2/00/61c386401393f974a7e770be610bfbc2512160d3eee180987b68a402ad44/flet_terminal-0.2.2.tar.gz", hash = "sha256:87eeca4d3d83c7310abba29b133b1d255e8f624e3ed7cbf107c038cf36fd1962", size = 20095, upload-time = "2026-07-24T17:17:12.218Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4a/30/22cf080aaf12d1b29727f7a119e78ef13236864429ed94fade5c00ee8ce3/flet_terminal-0.2.2-py3-none-any.whl", hash = "sha256:19cff5a756f375e6fd0d43e87be190b9bfb08a468193f4ba472b88e8554ccf45", size = 21388, upload-time = "2026-07-24T17:17:11.122Z" },
+]
+
+[[package]]
 name = "genson"
 version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -609,6 +621,7 @@ source = { editable = "." }
 dependencies = [
     { name = "flet", extra = ["cli", "desktop"] },
     { name = "flet-charts" },
+    { name = "flet-terminal" },
     { name = "loguru" },
     { name = "markdown-it-py" },
     { name = "mcp" },
@@ -636,6 +649,7 @@ dev = [
 requires-dist = [
     { name = "flet", extras = ["cli", "desktop"], specifier = ">=0.86.4" },
     { name = "flet-charts", specifier = ">=0.86.4" },
+    { name = "flet-terminal", specifier = ">=0.2.2" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "markdown-it-py", specifier = ">=4.2.0" },
     { name = "mcp", specifier = ">=1.28.1,<2.0.0" },

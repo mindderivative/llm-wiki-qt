@@ -29,6 +29,7 @@ from llm_wiki.gui.log_panel import LogPanel
 from llm_wiki.gui.menu import build_menu_bar
 from llm_wiki.gui.pipeline_adapter import PipelineAdapter
 from llm_wiki.gui.splitter import ResizeHandle
+from llm_wiki.gui.terminal_panel import TerminalPanel
 from llm_wiki.gui.toolbar import Toolbar
 from llm_wiki.ingest import RawWatcher, enqueue_file, scan_raw_directory
 from llm_wiki.llm.client import DEFAULT_API_KEY, LlamaClient
@@ -86,7 +87,10 @@ class Shell:
             selected=1,
         )
         self.log_panel = LogPanel()
-        self.bottom_dock = DockArea([("Pipeline Log", self.log_panel)])
+        self.terminal_panel = TerminalPanel(page)
+        self.bottom_dock = DockArea(
+            [("Pipeline Log", self.log_panel), ("Terminal", self.terminal_panel)]
+        )
 
         self.left_pane = ft.Container(
             width=LEFT_WIDTH,
@@ -227,6 +231,7 @@ class Shell:
         """
         self.mcp_process.stop()  # don't leave an orphaned subprocess behind
         self.raw_watcher.stop()
+        self.terminal_panel.stop()
         self.page.run_task(self.page.window.close)
 
     def _on_vault_changed(self) -> None:
@@ -241,6 +246,7 @@ class Shell:
         client = LlamaClient(base_url=llm.base_url, api_key=llm.api_key or DEFAULT_API_KEY)
         self.pipeline_adapter.configure(self.controller.vault_path, client, llm.chat_model)
         self.chat_panel.configure(self.controller.vault_path, client, llm.chat_model)
+        self.terminal_panel.configure(self.controller.vault_path)
         self._sync_raw_watcher()
 
         self.page.title = (
