@@ -66,7 +66,7 @@ class Shell:
         self.controller = AppController()
         self.controller.subscribe(self._on_vault_changed)
 
-        self.graph = GraphCanvas()
+        self.graph = GraphCanvas(page)
         self.file_picker = ft.FilePicker()
         # FilePicker is a Service, not a visual Control -- it belongs on
         # page.services (attached to the root view's service lifecycle), not

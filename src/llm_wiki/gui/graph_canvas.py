@@ -3,11 +3,12 @@
 Ports the layout and drawing logic of the Phase 15 `GraphCanvasItem`
 (`networkx.spring_layout` computed off the UI thread, then nodes and edges
 drawn by hand) onto Flet's `Canvas`. Node categories, the legend, and the
-zoom controls follow the design mockup.
+zoom controls follow the design mockup; scroll-to-zoom, click-drag-to-pan
+the whole canvas, and a "basic info" overlay on node selection (Phase 17)
+extend past the mockup, which only demonstrated per-node dragging.
 """
 
 import contextlib
-import threading
 
 import flet as ft
 import flet.canvas as cv
@@ -18,6 +19,7 @@ from llm_wiki.gui import theme
 _NODE_RADIUS = 9.0
 _LAYOUT_MARGIN = 60.0
 _ZOOM_STEP = 0.15
+_SCROLL_ZOOM_STEP = 0.08
 _MIN_ZOOM = 0.5
 _MAX_ZOOM = 2.0
 # Nominal layout space; the canvas scales to its real size on first resize.
@@ -39,8 +41,9 @@ def _category_of(slug: str) -> str:
 class GraphCanvas(ft.Container):
     """Interactive canvas visualizing the vault's `[[wikilink]]` network."""
 
-    def __init__(self, on_node_selected=None) -> None:
+    def __init__(self, page: ft.Page, on_node_selected=None) -> None:
         super().__init__()
+        self._page = page  # NOT self.page -- ft.Container reserves that name
         self.expand = True
         self.bgcolor = theme.CANVAS_BG
         self.on_node_selected = on_node_selected
@@ -50,7 +53,10 @@ class GraphCanvas(ft.Container):
         self._width = _BASE_WIDTH
         self._height = _BASE_HEIGHT
         self._zoom = 1.0
+        self._pan_x = 0.0
+        self._pan_y = 0.0
         self._dragging: str | None = None
+        self._panning = False
         self._selected: str | None = None
 
         self._canvas = cv.Canvas(shapes=[], expand=True, on_resize=self._on_resize)
@@ -60,9 +66,16 @@ class GraphCanvas(ft.Container):
             on_pan_start=self._on_pan_start,
             on_pan_update=self._on_pan_update,
             on_pan_end=self._on_pan_end,
+            on_scroll=self._on_scroll,
         )
+        self._info_overlay = self._build_info_overlay()
         self.content = ft.Stack(
-            controls=[self._gestures, self._build_legend(), self._build_zoom_controls()],
+            controls=[
+                self._gestures,
+                self._build_legend(),
+                self._build_zoom_controls(),
+                self._info_overlay,
+            ],
             expand=True,
         )
 
@@ -80,16 +93,32 @@ class GraphCanvas(ft.Container):
     def set_graph(self, graph: nx.DiGraph) -> None:
         """Displays `graph`, computing its layout on a worker thread."""
         self._graph = graph.copy()
-        threading.Thread(target=self._compute_layout, daemon=True).start()
+        self._page.run_thread(self._layout_worker)
+
+    def _layout_positions(self) -> dict[str, tuple[float, float]]:
+        """Pure layout computation -- reads only plain attributes, touches no
+        Flet control, so it's safe to run off the event-loop thread.
+        """
+        if self._graph.number_of_nodes() == 0:
+            return {}
+        pos = nx.spring_layout(self._graph, k=0.15, iterations=50, seed=42)
+        return {str(node): self._to_canvas(float(xy[0]), float(xy[1])) for node, xy in pos.items()}
 
     def _compute_layout(self) -> None:
-        if self._graph.number_of_nodes() == 0:
-            self._positions = {}
-        else:
-            pos = nx.spring_layout(self._graph, k=0.15, iterations=50, seed=42)
-            self._positions = {
-                str(node): self._to_canvas(float(xy[0]), float(xy[1])) for node, xy in pos.items()
-            }
+        """Synchronous entry point kept for direct test use. Production code
+        goes through `set_graph()` -> `_layout_worker()` instead, which hops
+        back via `page.run_task()` before the resulting `_redraw()` touches
+        `self._canvas` -- `Control.update()` assumes the event-loop thread.
+        """
+        self._positions = self._layout_positions()
+        self._redraw()
+
+    def _layout_worker(self) -> None:
+        positions = self._layout_positions()
+        self._page.run_task(self._apply_positions, positions)
+
+    async def _apply_positions(self, positions: dict[str, tuple[float, float]]) -> None:
+        self._positions = positions
         self._redraw()
 
     def _to_canvas(self, x: float, y: float) -> tuple[float, float]:
@@ -108,29 +137,46 @@ class GraphCanvas(ft.Container):
         """The node whose circle contains `(x, y)`, if any."""
         hit_radius = _NODE_RADIUS * self._zoom
         for slug, (nx_, ny_) in self._positions.items():
-            if (nx_ * self._zoom - x) ** 2 + (ny_ * self._zoom - y) ** 2 <= hit_radius**2:
+            sx = nx_ * self._zoom + self._pan_x
+            sy = ny_ * self._zoom + self._pan_y
+            if (sx - x) ** 2 + (sy - y) ** 2 <= hit_radius**2:
                 return slug
         return None
 
     def _on_pan_start(self, e: ft.DragStartEvent) -> None:
         self._dragging = self._node_at(e.local_position.x, e.local_position.y)
         if self._dragging is not None:
+            self._panning = False
             self._selected = self._dragging
-            if self.on_node_selected is not None:
-                self.on_node_selected(self._dragging)
-            self._redraw()
+            self._notify_selection()
+        else:
+            # Empty background: pan the whole canvas instead of a node.
+            self._panning = True
+            if self._selected is not None:
+                self._selected = None
+                self._notify_selection()
 
     def _on_pan_update(self, e: ft.DragUpdateEvent) -> None:
-        if self._dragging is None:
-            return
-        self._positions[self._dragging] = (
-            e.local_position.x / self._zoom,
-            e.local_position.y / self._zoom,
-        )
-        self._redraw()
+        if self._dragging is not None:
+            self._positions[self._dragging] = (
+                (e.local_position.x - self._pan_x) / self._zoom,
+                (e.local_position.y - self._pan_y) / self._zoom,
+            )
+            self._redraw()
+        elif self._panning:
+            self._pan_x += e.local_delta.x
+            self._pan_y += e.local_delta.y
+            self._redraw()
 
     def _on_pan_end(self, e: ft.DragEndEvent) -> None:
         self._dragging = None
+        self._panning = False
+
+    def _notify_selection(self) -> None:
+        if self.on_node_selected is not None:
+            self.on_node_selected(self._selected)
+        self._update_info_overlay()
+        self._redraw()
 
     def zoom_in(self, e=None) -> None:
         self._set_zoom(self._zoom + _ZOOM_STEP)
@@ -141,16 +187,30 @@ class GraphCanvas(ft.Container):
     def zoom_reset(self, e=None) -> None:
         self._set_zoom(1.0)
 
-    def _set_zoom(self, value: float) -> None:
-        self._zoom = max(_MIN_ZOOM, min(_MAX_ZOOM, value))
+    def _set_zoom(self, value: float, focal: tuple[float, float] | None = None) -> None:
+        new_zoom = max(_MIN_ZOOM, min(_MAX_ZOOM, value))
+        if focal is not None and new_zoom != self._zoom:
+            # Keeps the data point under `focal` fixed on screen across the
+            # zoom change -- the buttons have no such point, so they don't
+            # pass one, and stay origin-anchored exactly as before.
+            fx, fy = focal
+            ratio = new_zoom / self._zoom
+            self._pan_x = fx + (self._pan_x - fx) * ratio
+            self._pan_y = fy + (self._pan_y - fy) * ratio
+        self._zoom = new_zoom
         self._redraw()
+
+    def _on_scroll(self, e: ft.ScrollEvent) -> None:
+        # Scroll up (negative dy) zooms in, matching maps/design-tool convention.
+        step = _SCROLL_ZOOM_STEP if e.scroll_delta.y < 0 else -_SCROLL_ZOOM_STEP
+        self._set_zoom(self._zoom + step, focal=(e.local_position.x, e.local_position.y))
 
     # --- Drawing ------------------------------------------------------------
 
     def build_shapes(self) -> list[cv.Shape]:
         """The canvas' edge and node shapes for the current layout."""
         shapes: list[cv.Shape] = []
-        edge_paint = ft.Paint(color=theme.GRAPH_EDGE, stroke_width=1.2)
+        edge_paint = ft.Paint(color=theme.GRAPH_EDGE, stroke_width=1.8)
 
         for u, v in self._graph.edges():
             if u in self._positions and v in self._positions:
@@ -158,10 +218,10 @@ class GraphCanvas(ft.Container):
                 x2, y2 = self._positions[v]
                 shapes.append(
                     cv.Line(
-                        x1 * self._zoom,
-                        y1 * self._zoom,
-                        x2 * self._zoom,
-                        y2 * self._zoom,
+                        x1 * self._zoom + self._pan_x,
+                        y1 * self._zoom + self._pan_y,
+                        x2 * self._zoom + self._pan_x,
+                        y2 * self._zoom + self._pan_y,
                         paint=edge_paint,
                     )
                 )
@@ -172,18 +232,15 @@ class GraphCanvas(ft.Container):
                 if slug == self._selected
                 else theme.CATEGORY_COLORS[_category_of(slug)]
             )
+            sx = x * self._zoom + self._pan_x
+            sy = y * self._zoom + self._pan_y
             shapes.append(
-                cv.Circle(
-                    x * self._zoom,
-                    y * self._zoom,
-                    _NODE_RADIUS * self._zoom,
-                    paint=ft.Paint(color=color),
-                )
+                cv.Circle(sx, sy, _NODE_RADIUS * self._zoom, paint=ft.Paint(color=color))
             )
             shapes.append(
                 cv.Text(
-                    x * self._zoom,
-                    y * self._zoom + _NODE_RADIUS * self._zoom + 3,
+                    sx,
+                    sy + _NODE_RADIUS * self._zoom + 3,
                     slug,
                     style=ft.TextStyle(size=10.5, color=theme.TEXT_NODE),
                     alignment=ft.Alignment.TOP_CENTER,
@@ -248,3 +305,41 @@ class GraphCanvas(ft.Container):
                 ],
             ),
         )
+
+    # --- Selected-node info overlay ------------------------------------------
+
+    def _build_info_overlay(self) -> ft.Control:
+        self._info_title = ft.Text("", size=12, weight=ft.FontWeight.W_600, color=theme.TEXT)
+        self._info_type = ft.Text("", size=10.5, color=theme.TEXT_SUBTLE)
+        self._info_tags = ft.Text("", size=10.5, color=theme.TEXT_SUBTLE)
+        self._info_links = ft.Text("", size=10.5, color=theme.TEXT_SUBTLE)
+        return ft.Container(
+            right=14,
+            top=12,
+            visible=False,
+            width=200,
+            padding=ft.Padding(12, 9, 12, 9),
+            bgcolor=theme.CARD_BG,
+            border=ft.Border.all(1, theme.BORDER),
+            border_radius=8,
+            content=ft.Column(
+                spacing=4,
+                controls=[self._info_title, self._info_type, self._info_tags, self._info_links],
+            ),
+        )
+
+    def _update_info_overlay(self) -> None:
+        if self._selected is None:
+            self._info_overlay.visible = False
+        else:
+            data = self._graph.nodes[self._selected]
+            tags = data.get("tags") or []
+            self._info_title.value = data.get("title") or self._selected
+            self._info_type.value = f"Type: {data.get('type', '—')}"
+            self._info_tags.value = f"Tags: {', '.join(tags) or '—'}"
+            in_deg = self._graph.in_degree(self._selected)
+            out_deg = self._graph.out_degree(self._selected)
+            self._info_links.value = f"Links: {in_deg} in / {out_deg} out"
+            self._info_overlay.visible = True
+        with contextlib.suppress(RuntimeError):
+            self._info_overlay.update()

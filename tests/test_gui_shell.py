@@ -13,9 +13,12 @@ import inspect
 import json
 import re
 import sqlite3
+import threading
+import time
 from pathlib import Path
 
 import flet as ft
+import flet.canvas as cv
 import networkx as nx
 import pytest
 
@@ -163,6 +166,46 @@ def test_reopening_a_vault_closes_the_previous_connection(
 # --- Graph canvas -----------------------------------------------------
 
 
+def _page_stub() -> object:
+    """A `page` placeholder for tests that never touch `set_graph()`'s
+    threaded path -- everything else on `GraphCanvas` reads/writes plain
+    state and never calls `self._page`.
+    """
+    return object()
+
+
+class _FakePage:
+    """A real thread-crossing double, matching `test_gui_chat.py`'s: a real
+    background thread for `run_thread`, a dedicated event-loop thread for
+    `run_task` via `run_coroutine_threadsafe` -- for the one test that
+    exercises `set_graph()`'s actual `run_thread` -> `run_task` path.
+    """
+
+    def __init__(self) -> None:
+        self.loop = asyncio.new_event_loop()
+        self._loop_thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self._loop_thread.start()
+
+    def run_thread(self, handler, *args, **kwargs) -> None:
+        threading.Thread(target=handler, args=args, kwargs=kwargs, daemon=True).start()
+
+    def run_task(self, handler, *args, **kwargs):
+        return asyncio.run_coroutine_threadsafe(handler(*args, **kwargs), self.loop)
+
+    def close(self) -> None:
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self._loop_thread.join(timeout=2)
+
+
+def _wait_until(predicate, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("condition not met within timeout")
+
+
 def _fixture_graph() -> nx.DiGraph:
     graph = nx.DiGraph()
     graph.add_edge("alpha", "beta")
@@ -170,8 +213,46 @@ def _fixture_graph() -> nx.DiGraph:
     return graph
 
 
+def _fixture_graph_with_attrs() -> nx.DiGraph:
+    graph = nx.DiGraph()
+    graph.add_node("alpha", title="Alpha Note", type="concept", tags=["core", "physics"])
+    graph.add_node("beta", title="Beta Note", type="entity", tags=[])
+    graph.add_edge("alpha", "beta")
+    return graph
+
+
+def _pan_start_at(canvas: GraphCanvas, x: float, y: float) -> None:
+    canvas._on_pan_start(
+        ft.DragStartEvent(
+            name="pan_start",
+            control=canvas,
+            data=None,
+            kind=ft.PointerDeviceType.MOUSE,
+            local_position=ft.Offset(x, y),
+            global_position=ft.Offset(x, y),
+            timestamp=0,
+        )
+    )
+
+
+def _pan_update_to(canvas: GraphCanvas, x: float, y: float, dx: float, dy: float) -> None:
+    canvas._on_pan_update(
+        ft.DragUpdateEvent(
+            name="pan_update",
+            control=canvas,
+            data=None,
+            local_position=ft.Offset(x, y),
+            global_position=ft.Offset(0, 0),
+            local_delta=ft.Offset(dx, dy),
+            global_delta=ft.Offset(dx, dy),
+            primary_delta=None,
+            timestamp=0,
+        )
+    )
+
+
 def test_graph_canvas_lays_out_a_fixture_graph() -> None:
-    canvas = GraphCanvas()
+    canvas = GraphCanvas(_page_stub())
     canvas._graph = _fixture_graph()
     canvas._compute_layout()
 
@@ -179,7 +260,7 @@ def test_graph_canvas_lays_out_a_fixture_graph() -> None:
 
 
 def test_graph_canvas_builds_a_shape_per_edge_and_two_per_node() -> None:
-    canvas = GraphCanvas()
+    canvas = GraphCanvas(_page_stub())
     canvas._graph = _fixture_graph()
     canvas._compute_layout()
 
@@ -187,8 +268,19 @@ def test_graph_canvas_builds_a_shape_per_edge_and_two_per_node() -> None:
     assert len(canvas.build_shapes()) == 8
 
 
+def test_graph_canvas_edges_use_a_visible_paint() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = _fixture_graph()
+    canvas._compute_layout()
+
+    lines = [shape for shape in canvas.build_shapes() if isinstance(shape, cv.Line)]
+    assert len(lines) == 2
+    assert all(line.paint.color == theme.GRAPH_EDGE for line in lines)
+    assert all(line.paint.stroke_width > 1.2 for line in lines)  # visibly thicker than before
+
+
 def test_graph_canvas_handles_an_empty_graph() -> None:
-    canvas = GraphCanvas()
+    canvas = GraphCanvas(_page_stub())
     canvas._compute_layout()
 
     assert canvas.node_positions == {}
@@ -196,7 +288,7 @@ def test_graph_canvas_handles_an_empty_graph() -> None:
 
 
 def test_graph_canvas_zoom_is_clamped() -> None:
-    canvas = GraphCanvas()
+    canvas = GraphCanvas(_page_stub())
     for _ in range(50):
         canvas.zoom_in()
     assert canvas.zoom == 2.0
@@ -210,7 +302,7 @@ def test_graph_canvas_zoom_is_clamped() -> None:
 
 
 def test_graph_canvas_hit_testing_finds_the_node_under_the_cursor() -> None:
-    canvas = GraphCanvas()
+    canvas = GraphCanvas(_page_stub())
     canvas._graph = _fixture_graph()
     canvas._compute_layout()
 
@@ -219,31 +311,186 @@ def test_graph_canvas_hit_testing_finds_the_node_under_the_cursor() -> None:
     assert canvas._node_at(-5000, -5000) is None
 
 
+def test_graph_canvas_hit_testing_accounts_for_pan() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = _fixture_graph()
+    canvas._compute_layout()
+
+    slug, (x, y) = next(iter(canvas.node_positions.items()))
+    canvas._pan_x, canvas._pan_y = 30.0, -20.0
+
+    assert canvas._node_at(x, y) is None  # original screen position, now empty
+    assert canvas._node_at(x + 30.0, y - 20.0) == slug  # panned screen position
+
+
 def test_dragging_a_node_moves_only_that_node() -> None:
-    canvas = GraphCanvas()
+    canvas = GraphCanvas(_page_stub())
     canvas._graph = _fixture_graph()
     canvas._compute_layout()
     before = dict(canvas.node_positions)
 
     slug, (x, y) = next(iter(before.items()))
     canvas._dragging = slug
-    canvas._on_pan_update(
-        ft.DragUpdateEvent(
-            name="pan_update",
-            control=canvas,
-            data=None,
-            local_position=ft.Offset(x + 40, y + 40),
-            global_position=ft.Offset(0, 0),
-            local_delta=ft.Offset(40, 40),
-            global_delta=ft.Offset(40, 40),
-            primary_delta=None,
-            timestamp=0,
-        )
-    )
+    _pan_update_to(canvas, x + 40, y + 40, dx=40, dy=40)
 
     assert canvas.node_positions[slug] != before[slug]
     others = [s for s in before if s != slug]
     assert all(canvas.node_positions[s] == before[s] for s in others)
+
+
+def test_dragging_a_node_while_panned_still_lands_at_the_cursor() -> None:
+    """Regression: without subtracting the pan offset first, dragging a node
+    while the canvas is panned would place it at the wrong data-space point.
+    """
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = _fixture_graph()
+    canvas._compute_layout()
+    canvas._pan_x, canvas._pan_y = 50.0, -30.0
+
+    slug = next(iter(canvas.node_positions))
+    canvas._dragging = slug
+    _pan_update_to(canvas, 200, 150, dx=1, dy=1)
+
+    data_x, data_y = canvas.node_positions[slug]
+    # The node's screen position (data * zoom + pan) must land back at the
+    # cursor (200, 150), not 50/-30 pixels off from it.
+    assert data_x * canvas.zoom + canvas._pan_x == pytest.approx(200)
+    assert data_y * canvas.zoom + canvas._pan_y == pytest.approx(150)
+
+
+def test_panning_empty_background_moves_the_view_not_the_nodes() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = _fixture_graph()
+    canvas._compute_layout()
+    before = dict(canvas.node_positions)
+
+    _pan_start_at(canvas, -9999, -9999)  # empty background, no node hit
+    assert canvas._panning is True
+    assert canvas._dragging is None
+
+    _pan_update_to(canvas, -9959, -9979, dx=40, dy=20)
+
+    assert canvas._pan_x == 40
+    assert canvas._pan_y == 20
+    assert canvas.node_positions == before  # untouched
+
+
+def test_selecting_a_node_shows_the_info_overlay() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = _fixture_graph_with_attrs()
+    canvas._compute_layout()
+
+    x, y = canvas.node_positions["alpha"]
+    _pan_start_at(canvas, x, y)
+
+    assert canvas._selected == "alpha"
+    assert canvas._info_overlay.visible is True
+    assert canvas._info_title.value == "Alpha Note"
+    assert "concept" in canvas._info_type.value
+    assert "core" in canvas._info_tags.value
+    assert "1 out" in canvas._info_links.value
+
+
+def test_clicking_empty_canvas_deselects_and_hides_the_overlay() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = _fixture_graph_with_attrs()
+    canvas._compute_layout()
+
+    x, y = canvas.node_positions["alpha"]
+    _pan_start_at(canvas, x, y)
+    assert canvas._info_overlay.visible is True
+
+    _pan_start_at(canvas, -9999, -9999)  # empty background
+
+    assert canvas._selected is None
+    assert canvas._info_overlay.visible is False
+
+
+def test_selection_callback_fires_on_select_and_deselect() -> None:
+    seen: list[str | None] = []
+    canvas = GraphCanvas(_page_stub(), on_node_selected=seen.append)
+    canvas._graph = _fixture_graph_with_attrs()
+    canvas._compute_layout()
+
+    x, y = canvas.node_positions["alpha"]
+    _pan_start_at(canvas, x, y)
+    _pan_start_at(canvas, -9999, -9999)
+
+    assert seen == ["alpha", None]
+
+
+def test_focal_zoom_keeps_the_data_point_under_the_cursor_fixed() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._pan_x, canvas._pan_y = 10.0, -25.0  # a non-trivial starting pan
+
+    focal = (120.0, 80.0)
+    # Whatever data point currently sits under `focal`...
+    data_under_focal_x = (focal[0] - canvas._pan_x) / canvas.zoom
+    data_under_focal_y = (focal[1] - canvas._pan_y) / canvas.zoom
+
+    canvas._set_zoom(canvas.zoom + 0.3, focal=focal)
+
+    # ...must still map to the same screen point after the zoom.
+    screen_x = data_under_focal_x * canvas.zoom + canvas._pan_x
+    screen_y = data_under_focal_y * canvas.zoom + canvas._pan_y
+    assert screen_x == pytest.approx(focal[0])
+    assert screen_y == pytest.approx(focal[1])
+
+
+def test_zoom_buttons_stay_origin_anchored_and_dont_pan() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._pan_x, canvas._pan_y = 15.0, -5.0
+
+    canvas.zoom_in()
+
+    assert canvas._pan_x == 15.0
+    assert canvas._pan_y == -5.0
+
+
+def test_scroll_up_zooms_in_and_scroll_down_zooms_out() -> None:
+    canvas = GraphCanvas(_page_stub())
+    start_zoom = canvas.zoom
+
+    canvas._on_scroll(
+        ft.ScrollEvent(
+            name="scroll",
+            control=canvas,
+            data=None,
+            local_position=ft.Offset(100, 100),
+            global_position=ft.Offset(100, 100),
+            scroll_delta=ft.Offset(0, -120),  # wheel up
+        )
+    )
+    assert canvas.zoom > start_zoom
+
+    zoomed_in = canvas.zoom
+    canvas._on_scroll(
+        ft.ScrollEvent(
+            name="scroll",
+            control=canvas,
+            data=None,
+            local_position=ft.Offset(100, 100),
+            global_position=ft.Offset(100, 100),
+            scroll_delta=ft.Offset(0, 120),  # wheel down
+        )
+    )
+    assert canvas.zoom < zoomed_in
+
+
+def test_set_graph_computes_layout_on_a_worker_thread() -> None:
+    """Exercises the real `page.run_thread()` -> `page.run_task()` path --
+    the direct `_compute_layout()` tests above bypass it entirely.
+    """
+    fake_page = _FakePage()
+    try:
+        canvas = GraphCanvas(fake_page)
+        canvas.set_graph(_fixture_graph())
+
+        _wait_until(lambda: canvas.node_positions != {})
+
+        assert sorted(canvas.node_positions) == ["alpha", "beta", "gamma"]
+    finally:
+        fake_page.close()
 
 
 # --- Resize handles ---------------------------------------------------

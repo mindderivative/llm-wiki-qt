@@ -7,6 +7,7 @@ keeps current on every write, for unrelated reasons). The `links` table
 is kept in sync via a delta per changed note, not a full vault re-walk.
 """
 
+import json
 import re
 import sqlite3
 from pathlib import Path
@@ -41,10 +42,21 @@ def rebuild_full(conn: sqlite3.Connection, vault_root: Path | str) -> int:
 
 
 def get_graph_data(conn: sqlite3.Connection) -> nx.DiGraph:
-    """Builds a directed graph of every note (nodes) and `[[wikilink]]` (edges)."""
+    """Builds a directed graph of every note (nodes) and `[[wikilink]]` (edges).
+
+    Nodes carry `title`/`type`/`tags` attributes -- consumed by the GUI's
+    graph canvas for its node-selection info overlay (Phase 17). Existing
+    callers (`degrees_of_separation`, the MCP server's `trace_network_path`)
+    only check node membership and shortest paths, so this is additive.
+    """
     graph = nx.DiGraph()
-    for row in conn.execute("SELECT slug FROM notes").fetchall():
-        graph.add_node(row["slug"])
+    for row in conn.execute("SELECT slug, title, type, tags FROM notes").fetchall():
+        graph.add_node(
+            row["slug"],
+            title=row["title"],
+            type=row["type"],
+            tags=json.loads(row["tags"]),
+        )
     for row in conn.execute("SELECT source_slug, target_slug FROM links").fetchall():
         graph.add_edge(row["source_slug"], row["target_slug"])
     return graph

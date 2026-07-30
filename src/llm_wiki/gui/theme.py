@@ -26,8 +26,11 @@ INPUT_BG = "#24272B"  # oklch(27% 0.01 260)
 # Lines and borders.
 BORDER = "#2A2E34"  # oklch(30% 0.012 260)
 BORDER_STRONG = "#2F3339"  # oklch(32% 0.012 260)
-GRAPH_EDGE = "#34383E"  # oklch(34% 0.012 260)
 BORDER_DASHED = "#3E434A"  # oklch(38% 0.014 260)
+# Deliberately lighter than the borders above -- a 1.2px line at their
+# lightness was invisible against CANVAS_BG's near-black; a graph edge
+# needs more contrast than a panel divider does.
+GRAPH_EDGE = "#4E535A"  # oklch(44% 0.013 260)
 
 # Text, dimmest to brightest.
 TEXT_DIM = "#5B5E62"  # oklch(48% 0.008 260)
