@@ -574,11 +574,37 @@ def _menu(recent: list[str]) -> ft.Control:
         on_open_recent=lambda _p: None,
         on_settings=_noop,
         on_exit=_noop,
+        on_reindex_vault=_noop,
         on_zoom_reset=_noop,
         on_toggle_left=_noop,
         on_toggle_right=_noop,
         on_toggle_bottom=_noop,
     )
+
+
+def test_tools_menu_reindex_vault_is_wired_to_a_real_callback() -> None:
+    calls: list[bool] = []
+    bar = build_menu_bar(
+        vault_label="LLM-Wiki",
+        recent_vaults=[],
+        on_new_vault=_noop,
+        on_open_vault=_noop,
+        on_open_recent=lambda _p: None,
+        on_settings=_noop,
+        on_exit=_noop,
+        on_reindex_vault=lambda _e: calls.append(True),
+        on_zoom_reset=_noop,
+        on_toggle_left=_noop,
+        on_toggle_right=_noop,
+        on_toggle_bottom=_noop,
+    )
+    menu_bar = bar.content.controls[0]
+    tools_menu = next(m for m in menu_bar.controls if m.content.value == "Tools")
+    reindex_item = next(i for i in tools_menu.controls if i.content.value == "Reindex Vault")
+
+    assert reindex_item.on_click is not None
+    reindex_item.on_click(None)
+    assert calls == [True]
 
 
 def test_menu_bar_has_the_mockups_five_menus() -> None:

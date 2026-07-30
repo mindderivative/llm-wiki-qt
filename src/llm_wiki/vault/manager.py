@@ -85,7 +85,9 @@ def create_vault(
             "## Rules\n"
             "- Source documents in `raw/` are immutable.\n"
             "- All section chunks must observe 200-400 word boundaries.\n"
-            "- Wikilink degrees of separation limit = 3.\n",
+            "- Wikilink degrees of separation limit = 3.\n"
+            "- Reference related entities and concepts using [[wikilink]] syntax "
+            "when meaningfully connected.\n",
             encoding="utf-8",
         )
 

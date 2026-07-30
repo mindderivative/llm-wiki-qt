@@ -19,7 +19,7 @@ from llm_wiki.llm.client import DEFAULT_API_KEY, LlamaClient
 from llm_wiki.llm.embeddings import DEFAULT_EMBEDDING_MODEL
 from llm_wiki.models import LLMWikiError
 from llm_wiki.storage import connect, rebuild_from_vault
-from llm_wiki.vault import CONFIG_FILENAME, create_vault, load_vault
+from llm_wiki.vault import CONFIG_FILENAME, create_vault, load_vault, reindex_vault
 from llm_wiki.vcs import git_engine
 
 app = typer.Typer(name="llm-wiki", help="Local-first, self-maintaining knowledge base engine.")
@@ -74,6 +74,15 @@ def vault_open(path: Path = typer.Argument(..., help="Path to an existing vault.
     except LLMWikiError as exc:
         _fail(str(exc))
     typer.echo(f"Opened vault '{info.name}' at {info.path}")
+
+
+@vault_app.command("reindex")
+def vault_reindex(vault: Path = _VaultOption) -> None:
+    """Backfills Related blocks, re-syncs links, and regenerates index.md."""
+    _require_vault(vault)
+    conn = connect(_db_path(vault))
+    reindex_vault(conn, vault)
+    typer.echo("Reindexed vault: backfilled related links, synced links, rebuilt index.md.")
 
 
 @app.command()

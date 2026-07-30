@@ -45,6 +45,7 @@ def build_menu_bar(
     recent_vaults: list[str],
     on_settings: Callable[[ft.Event], None],
     on_exit: Callable[[ft.Event], None],
+    on_reindex_vault: Callable[[ft.Event], None],
     on_zoom_reset: Callable[[ft.Event], None],
     on_toggle_left: Callable[[ft.Event], None],
     on_toggle_right: Callable[[ft.Event], None],
@@ -80,7 +81,7 @@ def build_menu_bar(
             _submenu(
                 "Tools",
                 [
-                    _item("Reindex Vault", None),
+                    _item("Reindex Vault", on_reindex_vault),
                     _item("Rebuild Graph", None),
                     _item("Clear Cache", None),
                     _item("Open Data Folder", None),

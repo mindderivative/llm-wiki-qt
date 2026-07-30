@@ -125,6 +125,10 @@ def test_compile_creates_source_summary_and_new_entity_note(
     source_post = frontmatter.load(result.source_path)
     assert source_post.metadata["type"] == "source"
     assert "Ada Lovelace pioneered" in source_post.content
+    # Bidirectional: the source note links forward to what was extracted
+    # from it, not just back to index.
+    assert "[[index]]" in source_post.content
+    assert "[[ada-lovelace]]" in source_post.content
 
     # Newly-created entity note: written as-is, no merge call needed.
     assert len(result.entity_paths) == 1
@@ -132,10 +136,12 @@ def test_compile_creates_source_summary_and_new_entity_note(
     assert entity_path == vault_root / "wiki" / "entities" / "ada-lovelace.md"
     entity_post = frontmatter.load(entity_path)
     assert entity_post.metadata["type"] == "entity"
-    assert (
-        entity_post.content.strip()
-        == "Ada Lovelace was a mathematician who worked with Charles Babbage."
+    assert entity_post.content.startswith(
+        "Ada Lovelace was a mathematician who worked with Charles Babbage."
     )
+    # Deterministic backlinks: index + its source, regardless of LLM output.
+    assert "[[index]]" in entity_post.content
+    assert f"[[{source_slug}]]" in entity_post.content
     assert entity_post.metadata["sources"] == [source_slug]
     assert len(scripted.calls) == 2  # summary + extraction, no merge call
 
@@ -155,13 +161,30 @@ def test_compile_creates_source_summary_and_new_entity_note(
 
     assert get_queue_item(conn, item.id).status is QueueStatus.COMPLETED
 
+    # Post-compile maintenance ran automatically -- no separate sync_links()
+    # call needed for the link graph to reflect the deterministic backlinks.
+    links = conn.execute("SELECT source_slug, target_slug FROM links").fetchall()
+    assert ("ada-lovelace", "index") in {(r[0], r[1]) for r in links}
+    assert ("ada-lovelace", source_slug) in {(r[0], r[1]) for r in links}
+
+    index_text = (vault_root / "wiki" / "index.md").read_text(encoding="utf-8")
+    assert f"[[{source_slug}]]" in index_text
+    assert "[[ada-lovelace]]" in index_text
+
+    log_text = (vault_root / "wiki" / "log.md").read_text(encoding="utf-8")
+    assert "Ada Lovelace Biography" in log_text
+
 
 def test_compile_merges_into_existing_entity_note(
     monkeypatch: pytest.MonkeyPatch, conn, vault_root: Path, source_file: Path
 ) -> None:
     entities_dir = vault_root / "wiki" / "entities"
     existing_post = frontmatter.Post(
-        "Ada Lovelace was born in 1815.\n",
+        # Already has a Related block, as if compiled once before under
+        # Phase 18 -- the merge prompt must never see it (see the
+        # `merge_call_content` assertion below).
+        "Ada Lovelace was born in 1815.\n\n"
+        "<!-- llm-wiki:related -->\n## Related\n\n- [[index]]\n- [[earlier-source]]\n",
         title="Ada Lovelace",
         slug="ada-lovelace",
         type="entity",
@@ -192,10 +215,18 @@ def test_compile_merges_into_existing_entity_note(
     result = compile_queued_item(conn, client, vault_root, item.id, chat_model="test-model")
 
     entity_post = frontmatter.load(result.entity_paths[0])
-    assert entity_post.content.strip() == merged_content
+    assert entity_post.content.startswith(merged_content)
+    assert "[[index]]" in entity_post.content
+    assert "[[earlier-source]]" in entity_post.content
+    assert f"[[{source_slug}]]" in entity_post.content
     assert set(entity_post.metadata["sources"]) == {"earlier-source", source_slug}
     assert set(entity_post.metadata["tags"]) == {"person", "mathematician"}
     assert len(scripted.calls) == 3  # summary + extraction + merge
+
+    # The Related block must never reach the merge LLM as "existing
+    # content" -- otherwise it could be mangled or duplicated.
+    merge_call_content = scripted.calls[2]["messages"][1]["content"]
+    assert "llm-wiki:related" not in merge_call_content
 
     # The merge path also upserts the notes row (not just a fresh insert).
     row = conn.execute(
@@ -246,6 +277,31 @@ def test_compile_stops_reporting_stages_once_it_fails(
     # atomize() never touches the LLM, so it reaches ATOMIZED before the
     # summary call (the first real LLM call) raises and aborts the rest.
     assert stages == [CompileStage.ATOMIZED]
+
+
+def test_post_compile_maintenance_failure_does_not_fail_the_compile(
+    monkeypatch: pytest.MonkeyPatch, conn, vault_root: Path, source_file: Path
+) -> None:
+    """A sync_links()/rebuild_index()/log-append failure is a maintenance
+    hiccup, not an ingestion failure -- it must not flip an otherwise-
+    successful item to ERROR (Phase 18).
+    """
+    item = enqueue_file(conn, vault_root, source_file, title="Ada Lovelace Biography")
+    responses = [
+        "## Overview\n\nAda Lovelace pioneered the concept of programmable computing.",
+        _extraction_response(slug="ada-lovelace", content="Ada Lovelace bio."),
+    ]
+    client, _ = _make_client(monkeypatch, responses)
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr("llm_wiki.compiler.compiler_engine.sync_links", _boom)
+
+    result = compile_queued_item(conn, client, vault_root, item.id, chat_model="test-model")
+
+    assert result.entity_paths  # the compile itself still succeeded
+    assert get_queue_item(conn, item.id).status is QueueStatus.COMPLETED
 
 
 def test_compile_marks_item_error_and_reraises_on_failure(

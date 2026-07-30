@@ -78,6 +78,9 @@ def rebuild_from_vault(vault_root: Path | str, db_path: Path | str) -> sqlite3.C
     return conn
 
 
+_RESERVED_TOP_LEVEL_FILES = {"index.md", "log.md"}
+
+
 def _rebuild_notes(conn: sqlite3.Connection, vault_root: Path) -> None:
     wiki_dir = vault_root / "wiki"
     if not wiki_dir.exists():
@@ -85,6 +88,12 @@ def _rebuild_notes(conn: sqlite3.Connection, vault_root: Path) -> None:
 
     for note_path in sorted(wiki_dir.rglob("*.md")):
         if _SYSTEM_DIR_NAME in note_path.parts:
+            continue
+        # wiki/index.md and wiki/log.md are reserved, never-tracked system
+        # files (vault/manager.py, vault/reindex.py) -- excluded only at
+        # the top level, so a legitimately-slugged note elsewhere (e.g.
+        # wiki/entities/index.md, about database indexing) isn't skipped.
+        if note_path.parent == wiki_dir and note_path.name in _RESERVED_TOP_LEVEL_FILES:
             continue
         upsert_note_from_file(conn, vault_root, note_path)
 

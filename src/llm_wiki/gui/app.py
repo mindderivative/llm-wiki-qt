@@ -34,6 +34,7 @@ from llm_wiki.ingest import RawWatcher, enqueue_file, scan_raw_directory
 from llm_wiki.llm.client import DEFAULT_API_KEY, LlamaClient
 from llm_wiki.mcp.process import McpProcess
 from llm_wiki.models import CompileStage, LLMWikiError
+from llm_wiki.vault import reindex_vault
 
 LEFT_WIDTH = 280
 RIGHT_WIDTH = 320
@@ -150,6 +151,7 @@ class Shell:
             on_open_recent=self._open_recent,
             on_settings=lambda _e: self._open_settings_dialog(),
             on_exit=lambda _e: self._exit(),
+            on_reindex_vault=self._reindex_vault,
             on_zoom_reset=lambda _e: self.graph.zoom_reset(),
             on_toggle_left=lambda _e: self._toggle(self.left_pane),
             on_toggle_right=lambda _e: self._toggle(self.right_pane),
@@ -303,6 +305,24 @@ class Shell:
             self.items_panel.refresh()
         else:
             self._show_error("No new files found in raw/.")
+
+    def _reindex_vault(self, _e: ft.Event) -> None:
+        """Backfills every note's Related block, re-syncs the link graph,
+        and regenerates index.md -- the retroactive fix for a vault
+        compiled before Phase 18, or otherwise out of sync.
+        """
+        if self.controller.conn is None or self.controller.vault_path is None:
+            self._show_error("No active vault -- open or create one first.")
+            return
+        try:
+            reindex_vault(self.controller.conn, self.controller.vault_path)
+        except Exception as exc:  # noqa: BLE001 -- surfaced to the user, not re-raised
+            self._show_error(str(exc))
+            return
+        self.graph.set_graph(get_graph_data(self.controller.conn))
+        self.health_panel.set_connection(self.controller.conn)
+        self.items_panel.refresh()
+        self.page.update()
 
     # --- Pipeline adapter events (all fire on the UI thread) ----------------
 

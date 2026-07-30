@@ -12,6 +12,7 @@ from llm_wiki.storage import (
     rebuild_from_vault,
     upsert_note_from_file,
 )
+from llm_wiki.vault import create_vault
 
 _ENTITY_NOTE = """\
 ---
@@ -93,6 +94,23 @@ def test_rebuild_from_vault_populates_notes_table(tmp_path: Path) -> None:
 
     assert notes_source["slug"] == "1843-notes-on-the-engine"
     assert notes_source["type"] == "source"
+
+
+def test_rebuild_from_vault_never_ingests_index_or_log_as_notes(tmp_path: Path) -> None:
+    """Regression (Phase 18): wiki/index.md and wiki/log.md are reserved,
+    never-tracked system files -- a full rebuild must not silently ingest
+    them as bogus "source" notes (they have no frontmatter, so they'd
+    default to type=source, slug=index/log).
+    """
+    vault_root = tmp_path / "vault"
+    create_vault(vault_root, "Test Vault", "desc", recent_vaults_path=tmp_path / "recent.json")
+    db_path = tmp_path / ".llm-wiki" / "db.sqlite3"
+
+    conn = rebuild_from_vault(vault_root, db_path)
+
+    slugs = {row[0] for row in conn.execute("SELECT slug FROM notes").fetchall()}
+    assert "index" not in slugs
+    assert "log" not in slugs
 
 
 def test_rebuild_from_vault_is_idempotent_and_wipes_stale_rows(tmp_path: Path) -> None:

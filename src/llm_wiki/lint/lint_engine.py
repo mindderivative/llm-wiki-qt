@@ -83,7 +83,11 @@ def _check_broken_links(conn: sqlite3.Connection, run_id: str) -> list[LintFindi
     }
     findings = []
     for row in conn.execute("SELECT source_slug, target_slug FROM links").fetchall():
-        if row["target_slug"] in slug_to_path:
+        # "index" is a reserved pseudo-note (wiki/index.md) deliberately
+        # never tracked as a `notes` row (see storage/db.py's rebuild
+        # exclusion) -- every note links to it via its deterministic
+        # Related block, so it must never be reported as broken.
+        if row["target_slug"] == "index" or row["target_slug"] in slug_to_path:
             continue
         findings.append(
             LintFinding(

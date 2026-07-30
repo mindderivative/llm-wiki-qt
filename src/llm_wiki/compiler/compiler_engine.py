@@ -15,6 +15,7 @@ import frontmatter
 from loguru import logger
 from pydantic import BaseModel
 
+from llm_wiki.graph.link_engine import sync_links
 from llm_wiki.ingest.atomizer import atomize
 from llm_wiki.ingest.ingest_engine import get_queue_item, update_status
 from llm_wiki.llm.client import LlamaClient
@@ -30,8 +31,10 @@ from llm_wiki.models import (
     QueueItem,
     QueueStatus,
 )
+from llm_wiki.related_links import render_related_block, strip_related_block
 from llm_wiki.storage.db import insert_chunk, upsert_note_from_file
 from llm_wiki.storage.vector_search import upsert_chunk_embedding
+from llm_wiki.vault.reindex import append_log_entry, rebuild_index
 
 _SUMMARY_SYSTEM_PROMPT = (
     "You are an expert technical knowledge synthesizer for an authoritative LLM Wiki. "
@@ -62,6 +65,19 @@ _NOTE_TYPE_DIRS: dict[NoteType, str] = {
     NoteType.CONCEPT: "concepts",
     NoteType.SYNTHESIS: "synthesis",
 }
+
+def _build_system_prompt(base: str, schema_rules: str) -> str:
+    """Folds a vault's SCHEMA.md into a base system prompt, if present."""
+    if not schema_rules.strip():
+        return base
+    return f"{base}\n\nVault-specific operational rules (from SCHEMA.md):\n{schema_rules}"
+
+
+def _load_schema_rules(vault_root: Path) -> str:
+    schema_path = vault_root / "SCHEMA.md"
+    if not schema_path.exists():
+        return ""
+    return schema_path.read_text(encoding="utf-8")
 
 
 class ExtractedEntities(BaseModel):
@@ -103,6 +119,7 @@ def compile_queued_item(
 
     try:
         raw_text = (vault_root / queue_item.raw_path).read_text(encoding="utf-8")
+        schema_rules = _load_schema_rules(vault_root)
 
         update_status(conn, queue_item_id, QueueStatus.PARSING)
         chunks = atomize(raw_text, queue_item_id=queue_item_id)
@@ -112,18 +129,23 @@ def compile_queued_item(
 
         update_status(conn, queue_item_id, QueueStatus.ANALYZING)
         summary_text = _generate_summary(client, chat_model, queue_item.title, raw_text)
-        entities = _extract_entities(client, chat_model, summary_text)
+        entities = _extract_entities(client, chat_model, summary_text, schema_rules)
         logger.info(f"Extracted {len(entities)} entity/concept note(s)")
         if on_stage:
             on_stage(CompileStage.EXTRACTED)
 
         update_status(conn, queue_item_id, QueueStatus.CASCADE)
-        source_path, source_slug = _write_source_note(vault_root, queue_item, summary_text)
+        entity_slugs = [extracted.frontmatter.slug for extracted in entities]
+        source_path, source_slug = _write_source_note(
+            vault_root, queue_item, summary_text, entity_slugs
+        )
         upsert_note_from_file(conn, vault_root, source_path)
 
         entity_paths = []
         for extracted in entities:
-            note_path = _cascade_update_note(vault_root, client, chat_model, extracted, source_slug)
+            note_path = _cascade_update_note(
+                vault_root, client, chat_model, extracted, source_slug, schema_rules
+            )
             upsert_note_from_file(conn, vault_root, note_path)
             entity_paths.append(note_path)
         logger.info(f"Linked {len(entity_paths)} note(s) to {source_slug}")
@@ -137,6 +159,9 @@ def compile_queued_item(
 
         update_status(conn, queue_item_id, QueueStatus.COMPLETED)
         logger.info(f"Compilation completed for {queue_item.title}")
+
+        _run_post_compile_maintenance(conn, vault_root, queue_item.title, len(entity_paths))
+
         return CompileResult(
             source_path=source_path, entity_paths=entity_paths, chunk_ids=chunk_ids
         )
@@ -145,6 +170,33 @@ def compile_queued_item(
         update_status(conn, queue_item_id, QueueStatus.ERROR, error=str(exc))
         logger.error(f"Compilation failed for {queue_item.title}: {exc}")
         raise CompilationError(f"Compilation failed for queue item {queue_item_id}: {exc}") from exc
+
+
+def _run_post_compile_maintenance(
+    conn: sqlite3.Connection, vault_root: Path, title: str, note_count: int
+) -> None:
+    """Keeps the link graph, `index.md`, and `log.md` live after every
+    compile. Each step is independent and log-only on failure -- none of
+    them touch the note files or embeddings the compile already wrote
+    successfully, so a maintenance hiccup here must never flip an
+    otherwise-successful item to ERROR (see Phase 18 of the plan file).
+    """
+    try:
+        synced = sync_links(conn, vault_root)
+        logger.info(f"Synced {synced} note(s) into the link graph")
+    except Exception as exc:  # noqa: BLE001 -- logged, not fatal to the compile
+        logger.error(f"Post-compile link sync failed for {title}: {exc}")
+
+    try:
+        rebuild_index(conn, vault_root)
+        logger.info("Rebuilt wiki/index.md")
+    except Exception as exc:  # noqa: BLE001 -- logged, not fatal to the compile
+        logger.error(f"Post-compile index rebuild failed for {title}: {exc}")
+
+    try:
+        append_log_entry(vault_root, f"Compiled '{title}' -> {note_count} note(s)")
+    except Exception as exc:  # noqa: BLE001 -- logged, not fatal to the compile
+        logger.error(f"Post-compile log append failed for {title}: {exc}")
 
 
 def _generate_summary(client: LlamaClient, model: str, title: str, raw_text: str) -> str:
@@ -157,14 +209,20 @@ def _generate_summary(client: LlamaClient, model: str, title: str, raw_text: str
     return summary or f"## Overview\n\nAutomated ingestion for `{title}` completed."
 
 
-def _extract_entities(client: LlamaClient, model: str, summary_text: str) -> list[ExtractedNote]:
-    prompt = f"{_ENTITY_EXTRACTION_PROMPT}\n\nSUMMARY:\n{summary_text}"
+def _extract_entities(
+    client: LlamaClient, model: str, summary_text: str, schema_rules: str = ""
+) -> list[ExtractedNote]:
+    system_prompt = _build_system_prompt(_ENTITY_EXTRACTION_PROMPT, schema_rules)
+    prompt = f"{system_prompt}\n\nSUMMARY:\n{summary_text}"
     result = extract_structured(client, prompt, ExtractedEntities, model=model)
     return result.entities
 
 
 def _write_source_note(
-    vault_root: Path, queue_item: QueueItem, summary_text: str
+    vault_root: Path,
+    queue_item: QueueItem,
+    summary_text: str,
+    entity_slugs: list[str] | None = None,
 ) -> tuple[Path, str]:
     slug = Path(queue_item.raw_path).stem
     note_dir = vault_root / "wiki" / "sources"
@@ -178,7 +236,12 @@ def _write_source_note(
         tags=["source", "ingested"],
         sources=[slug],
     )
-    _write_note_file(note_path, fm, summary_text)
+    # `sources` is self-referential for a source note (it's a summary *of*
+    # itself), so its Related block would otherwise collapse to just
+    # `[[index]]` -- entity_slugs makes it also link forward to whatever
+    # was extracted from it, a genuinely bidirectional graph rather than a
+    # one-way entity->source backlink.
+    _write_note_file(note_path, fm, summary_text, extra_related=entity_slugs)
     return note_path, slug
 
 
@@ -188,6 +251,7 @@ def _cascade_update_note(
     model: str,
     extracted: ExtractedNote,
     source_slug: str,
+    schema_rules: str = "",
 ) -> Path:
     """Writes a new note, or merges into an existing one, for one extracted entity/concept."""
     subdir = _NOTE_TYPE_DIRS[extracted.frontmatter.type]
@@ -197,11 +261,17 @@ def _cascade_update_note(
 
     if note_path.exists():
         existing = frontmatter.loads(note_path.read_text(encoding="utf-8"))
+        # Strip the deterministic Related block before it ever reaches the
+        # LLM -- otherwise the merge prompt sees it as "existing content"
+        # and may mangle/duplicate it; `_write_note_file()` regenerates a
+        # fresh one from `fm.sources` unconditionally below regardless.
+        existing_content = strip_related_block(str(existing.content))
         body = _merge_note_content(
             client,
             model,
-            existing_content=str(existing.content),
+            existing_content=existing_content,
             new_content=extracted.content,
+            schema_rules=schema_rules,
         )
         tags = sorted(set(existing.get("tags", [])) | set(extracted.frontmatter.tags))
         sources = sorted(set(existing.get("sources", [])) | {source_slug})
@@ -222,10 +292,16 @@ def _cascade_update_note(
 
 
 def _merge_note_content(
-    client: LlamaClient, model: str, *, existing_content: str, new_content: str
+    client: LlamaClient,
+    model: str,
+    *,
+    existing_content: str,
+    new_content: str,
+    schema_rules: str = "",
 ) -> str:
+    system_prompt = _build_system_prompt(_MERGE_SYSTEM_PROMPT, schema_rules)
     messages = [
-        {"role": "system", "content": _MERGE_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {
             "role": "user",
             "content": f"EXISTING NOTE:\n{existing_content}\n\nNEW INFORMATION:\n{new_content}",
@@ -235,8 +311,12 @@ def _merge_note_content(
     return merged or existing_content
 
 
-def _write_note_file(path: Path, fm: NoteFrontmatter, body: str) -> None:
-    post = frontmatter.Post(body.strip() + "\n", **fm.model_dump(mode="json"))
+def _write_note_file(
+    path: Path, fm: NoteFrontmatter, body: str, *, extra_related: list[str] | None = None
+) -> None:
+    clean_body = strip_related_block(body.strip())
+    full_body = clean_body + render_related_block(fm, extra_related)
+    post = frontmatter.Post(full_body.strip() + "\n", **fm.model_dump(mode="json"))
     path.write_text(frontmatter.dumps(post) + "\n", encoding="utf-8")
 
 

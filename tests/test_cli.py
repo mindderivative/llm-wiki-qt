@@ -61,6 +61,16 @@ def test_vault_open_on_invalid_directory_fails(tmp_path: Path) -> None:
     assert result.exit_code == 1
 
 
+def test_vault_reindex_on_empty_vault(tmp_path: Path) -> None:
+    vault_path = tmp_path / "my-vault"
+    runner.invoke(app, ["vault", "create", str(vault_path)])
+
+    result = runner.invoke(app, ["vault", "reindex", "--vault", str(vault_path)])
+
+    assert result.exit_code == 0
+    assert "Reindexed vault" in result.output
+
+
 def test_link_sync_and_rebuild_on_empty_vault(tmp_path: Path) -> None:
     vault_path = tmp_path / "my-vault"
     runner.invoke(app, ["vault", "create", str(vault_path)])

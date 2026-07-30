@@ -89,6 +89,20 @@ def test_broken_link_deducts_score(conn, vault_root) -> None:
     assert report.score == STARTING_SCORE - 5
 
 
+def test_link_to_index_is_never_reported_as_broken(conn, vault_root) -> None:
+    """`index` is a reserved pseudo-note (wiki/index.md) that's
+    deliberately never a `notes` row (Phase 18) -- every note links to it
+    via its deterministic Related block, so it must never be flagged.
+    """
+    _add_note(vault_root, conn, slug="a", body="See [[index]].")
+    sync_links(conn, vault_root)
+
+    report = run_lint(conn)
+
+    assert report.score == STARTING_SCORE
+    assert report.findings == []
+
+
 def test_isolated_note_deducts_score(conn, vault_root) -> None:
     _add_note(vault_root, conn, slug="a", body="See [[b]].")
     _add_note(vault_root, conn, slug="b", body="See [[a]].")
