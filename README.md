@@ -1,5 +1,11 @@
 # LLM-Wiki
 
+> **ARCHIVED — on indefinite hold as of 2026-07-31.** This project grew
+> well past its original scope (27+ phases, extensive Flet-GUI/graph-
+> canvas work) and is being set aside due to goal deviation and scope
+> creep. Development is not continuing here. A narrower-scoped
+> successor, a Python LLM Wiki Knowledge Base, is planned separately.
+
 A local-first, self-maintaining knowledge base engine. Drop raw source
 documents in; the engine atomizes, summarizes, links, and lints them into a
 GEO-optimized Markdown wiki, powered entirely by your own `llama.cpp`
