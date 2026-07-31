@@ -88,8 +88,17 @@ def build_theme() -> ft.Theme:
         # working lever, not a coincidence. No thumb_color override here:
         # it inherits color_scheme.primary above, matching every other
         # accent-colored control in the app.
+        #
+        # No year_2023 override: its own docs were misread earlier as
+        # "True = classic simple circular thumb," which isn't what it
+        # does -- `False` (the default) is "the *latest* Material 3
+        # appearance, introduced December 2023," `True` is "*the 2023*
+        # Material 3 appearance" -- two different Material-3-era slider
+        # redesigns, neither a plain pre-M3 thumb. Every earlier test
+        # (nested Container and page.theme alike) had year_2023=True set
+        # the whole time, so thumb_size was never actually tested against
+        # the real default style until now.
         slider_theme=ft.SliderTheme(
             thumb_size=ft.Size.square(SLIDER_THUMB_DIAMETER),
-            year_2023=True,
         ),
     )
