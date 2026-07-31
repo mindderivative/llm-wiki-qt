@@ -760,12 +760,12 @@ def test_filtered_out_nodes_are_excluded_from_shapes_and_hit_testing() -> None:
     static_shapes = canvas._build_static_shapes()
     circles = [s for s in static_shapes if isinstance(s, cv.Circle)]
     lines = [s for s in static_shapes if isinstance(s, cv.Line)]
-    # Only note-a and index (exempt) render -- 2 circles. Every edge
-    # touches a filtered-out node except none do here since note-a's own
-    # edges go to index (kept) and note-b (filtered out) -- only the
-    # note-a/index edge should survive.
+    # Only note-a and index (exempt) render -- 2 circles. note-a's only
+    # surviving edge goes to index, but index's own edges are hidden
+    # unconditionally unless index itself is selected (Post-26 fix) --
+    # nothing is selected here, so no lines survive at all.
     assert len(circles) == 2
-    assert len(lines) == 1
+    assert len(lines) == 0
 
     # note-b's position (20.0, 0.0) is no longer hit-testable.
     assert canvas._node_at(20.0, 0.0) is None
@@ -934,12 +934,21 @@ def test_compute_index_edge_limit_visible_is_empty_without_an_index_node() -> No
     assert canvas._compute_index_edge_limit_visible() == set()
 
 
-def test_index_edge_visible_true_when_not_selecting_index() -> None:
+def test_index_edge_visible_false_when_index_is_not_selected() -> None:
+    """Post-26 fix: index's own edges are hidden unconditionally unless
+    index itself is the current selection -- regardless of the enable
+    switch, which only governs behavior once index *is* selected.
+    """
     canvas = _filters_canvas()
-    canvas._filter_index_edges_enabled = True
     canvas._selected = "note-a"
 
-    assert canvas._index_edge_visible("note-b", set()) is True
+    canvas._filter_index_edges_enabled = True
+    assert canvas._index_edge_visible("note-b", set()) is False
+    canvas._filter_index_edges_enabled = False
+    assert canvas._index_edge_visible("note-b", set()) is False
+
+    canvas._selected = None
+    assert canvas._index_edge_visible("note-b", set()) is False
 
 
 def test_index_edge_visible_true_when_switch_off() -> None:
@@ -973,6 +982,25 @@ def test_capped_index_edge_is_excluded_but_the_neighbor_circle_still_renders() -
     # plus the note-a/note-b edge (doesn't touch index, unaffected).
     assert len(lines) == 2
     assert len(circles) == 4  # every node's circle still renders
+
+
+def test_index_edges_are_hidden_by_default_when_index_is_not_selected() -> None:
+    """Post-26 fix: index's edges start hidden entirely -- not visible-
+    then-capped -- restoring the original deferred-list ask ("hidden
+    unless index node is selected"). Node circles and the note-a/note-b
+    edge (doesn't touch index) are unaffected either way.
+    """
+    canvas = _filters_canvas()  # nothing selected, switch at its default (off)
+
+    lines = [s for s in canvas._build_static_shapes() if isinstance(s, cv.Line)]
+    circles = [s for s in canvas._build_static_shapes() if isinstance(s, cv.Circle)]
+
+    assert len(lines) == 1  # only note-a/note-b -- all 3 index edges hidden
+    assert len(circles) == 4  # every node's circle still renders
+
+    canvas._selected = "note-a"  # selecting a non-index node changes nothing here
+    lines = [s for s in canvas._build_static_shapes() if isinstance(s, cv.Line)]
+    assert len(lines) == 1
 
 
 def test_index_edges_switch_off_shows_all_connections_even_when_index_is_selected() -> None:
@@ -1025,7 +1053,7 @@ def test_index_edge_limit_slider_change_does_not_rebuild_the_settings_panel() ->
 
 def test_index_edges_caption_text_in_each_state() -> None:
     canvas = _filters_canvas()
-    assert canvas._index_edges_caption_text() == "Applies once index is selected"
+    assert canvas._index_edges_caption_text() == "Hidden until index is selected"
 
     canvas._selected = "index"
     assert canvas._index_edges_caption_text() == "Showing all connections"
@@ -1044,7 +1072,7 @@ def test_selecting_index_updates_the_index_edges_caption_directly() -> None:
     `self._selected` too, so it must be mutated from `_notify_selection()`.
     """
     canvas = _filters_canvas()
-    assert canvas._index_edges_caption.value == "Applies once index is selected"
+    assert canvas._index_edges_caption.value == "Hidden until index is selected"
 
     canvas._selected = "index"
     canvas._notify_selection()
@@ -1054,7 +1082,7 @@ def test_selecting_index_updates_the_index_edges_caption_directly() -> None:
     canvas._selected = None
     canvas._notify_selection()
 
-    assert canvas._index_edges_caption.value == "Applies once index is selected"
+    assert canvas._index_edges_caption.value == "Hidden until index is selected"
 
 
 # --- Master and per-dimension enable switches (Post-24 fix) ---------------
@@ -1845,12 +1873,18 @@ def test_dynamic_edge_to_a_static_endpoint_draws_a_shadow_circle_on_top() -> Non
     `index`, excluded from the dynamic set by the gravity well -- the
     common case) would otherwise draw over its static endpoint's circle,
     regardless of within-canvas shape ordering.
+
+    Post-26 fix: index's own edges only render while index is selected,
+    which dragging a *different* node normally clears -- `canvas._selected`
+    is forced back to index here to isolate the shape-builder's z-order
+    logic under test from that unrelated selection-follows-drag behavior.
     """
     canvas = GraphCanvas(_page_stub())
     canvas._graph = nx.DiGraph([("leaf", "index")])
     canvas._positions = {"leaf": (400.0, 300.0), "index": (400.0, 420.0)}
 
     _pan_start_at(canvas, 400.0, 300.0)  # hits "leaf"
+    canvas._selected = "index"  # see docstring -- isolates the z-order check
     _pan_update_to(canvas, 500.0, 300.0, dx=100.0, dy=0.0)
     canvas._simulation_tick()
 

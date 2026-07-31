@@ -1003,8 +1003,19 @@ class GraphCanvas(ft.Container):
         any of its other edges, e.g. to a source note) is unaffected,
         matching the literal ask ("link lines... showed to the Nth
         degree," not nodes hidden).
+
+        Post-26 fix: inverted from the original design -- index's own
+        edges are hidden *unconditionally* unless index itself is the
+        current selection (matching the original deferred-list ask this
+        phase traces back to: "hidden unless index node is selected"),
+        not visible-by-default-then-capped. Once index is selected, the
+        enable switch/limit above still decide whether every connection
+        shows or only the top N -- that half of the behavior is
+        unchanged.
         """
-        if self._selected != _GRAVITY_WELL_SLUG or not self._filter_index_edges_enabled:
+        if self._selected != _GRAVITY_WELL_SLUG:
+            return False
+        if not self._filter_index_edges_enabled:
             return True
         return limit_visible is not None and neighbor in limit_visible
 
@@ -1556,7 +1567,7 @@ class GraphCanvas(ft.Container):
 
     def _index_edges_caption_text(self) -> str:
         if self._selected != _GRAVITY_WELL_SLUG:
-            return "Applies once index is selected"
+            return "Hidden until index is selected"
         if not self._filter_index_edges_enabled:
             return "Showing all connections"
         total = self._graph.degree(_GRAVITY_WELL_SLUG) if _GRAVITY_WELL_SLUG in self._graph else 0
