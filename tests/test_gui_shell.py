@@ -636,6 +636,9 @@ def test_build_popup_section_wraps_content_in_a_non_auto_closing_popup() -> None
     assert item_container.width == 200
     assert item_container.height == 150
     assert item_container.content is marker
+    # Top/bottom padding on the container that directly holds the popup's
+    # controls -- not the trigger (the popup's always-visible root).
+    assert item_container.padding == ft.Padding(0, 8, 0, 8)
 
 
 def test_filters_physics_zoom_pan_layout_are_each_wrapped_in_their_own_popup() -> None:

@@ -1395,7 +1395,14 @@ class GraphCanvas(ft.Container):
             content=trigger,
             menu_padding=ft.Padding(8, 8, 8, 8),
             items=[
-                ft.PopupMenuItem(content=ft.Container(width=width, height=height, content=content))
+                ft.PopupMenuItem(
+                    content=ft.Container(
+                        width=width,
+                        height=height,
+                        padding=ft.Padding(0, 8, 0, 8),
+                        content=content,
+                    )
+                )
             ],
         )
 
