@@ -60,5 +60,26 @@ STAGE_ATOMIZE = "#00B2DE"  # oklch(70% 0.15 220)
 STAGE_LINK = "#35C177"  # oklch(72% 0.16 155)
 STAGE_LINT = "#DFA11A"  # oklch(75% 0.15 80)
 
+# Post-26 fix -- the graph canvas Settings panel's category swatches and
+# (via build_theme()'s slider_theme below) every Slider's thumb share
+# this one size, so it lives here rather than duplicated in
+# graph_canvas.py. Material 3's own Switch spec (24dp "on"-thumb
+# diameter, scaled by graph_canvas._COMPACT_SWITCH_SCALE) was the
+# starting point; tuned from there against real user feedback.
+CATEGORY_SWATCH_DIAMETER = 14.0
+
+
 def build_theme() -> ft.Theme:
-    return ft.Theme(color_scheme=ft.ColorScheme(primary=ACCENT, surface=APP_BG, error=ERROR))
+    return ft.Theme(
+        color_scheme=ft.ColorScheme(primary=ACCENT, surface=APP_BG, error=ERROR),
+        # A Slider has no per-instance thumb-size property, only a Theme
+        # one -- confirmed (via direct testing, not Container.theme
+        # nesting, which turned out not to reliably apply at all in this
+        # app) that a page-wide Theme's own slider_theme is what actually
+        # reaches the widget. Safe as an app-wide setting: this app has
+        # no Slider anywhere except the graph canvas Settings panel.
+        slider_theme=ft.SliderTheme(
+            thumb_size=ft.Size.square(CATEGORY_SWATCH_DIAMETER),
+            year_2023=True,
+        ),
+    )

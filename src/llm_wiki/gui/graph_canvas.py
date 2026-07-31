@@ -63,8 +63,8 @@ _COMPACT_SWITCH_HEIGHT = 20.0
 # build -- shrunk further from there, tuned directly against your visual
 # feedback rather than re-derived from the spec. 12.0 then read slightly
 # too small; 14.0 confirmed the right size, with the row spacing left
-# unchanged.
-_CATEGORY_SWATCH_DIAMETER = 14.0
+# unchanged. Lives in theme.py (as CATEGORY_SWATCH_DIAMETER), not here --
+# also reused by build_theme()'s page-wide Slider thumb-size override.
 # Type checkboxes shrink to a square matching the switch's own height
 # (its full track, "including its borders") -- Checkbox's default
 # Material footprint, like Switch's, is bigger than its visible box, so
@@ -1388,9 +1388,9 @@ class GraphCanvas(ft.Container):
         against the live graph before settling on one.
         """
         trigger_swatch = ft.Container(
-            width=_CATEGORY_SWATCH_DIAMETER,
-            height=_CATEGORY_SWATCH_DIAMETER,
-            border_radius=_CATEGORY_SWATCH_DIAMETER / 2,
+            width=theme.CATEGORY_SWATCH_DIAMETER,
+            height=theme.CATEGORY_SWATCH_DIAMETER,
+            border_radius=theme.CATEGORY_SWATCH_DIAMETER / 2,
             bgcolor=self._type_colors[type_key],
         )
         self._color_swatch_controls[type_key] = trigger_swatch
@@ -1624,7 +1624,7 @@ class GraphCanvas(ft.Container):
             on_change_end=self._persist_filter_change,
         )
         return ft.Column(
-            spacing=2, controls=[self._degrees_caption, self._themed_slider(self._degrees_slider)]
+            spacing=2, controls=[self._degrees_caption, self._degrees_slider]
         )
 
     def _index_edges_caption_text(self) -> str:
@@ -1650,7 +1650,7 @@ class GraphCanvas(ft.Container):
         )
         return ft.Column(
             spacing=2,
-            controls=[self._index_edges_caption, self._themed_slider(self._index_edges_slider)],
+            controls=[self._index_edges_caption, self._index_edges_slider],
         )
 
     def _compact_switch(self, switch: ft.Switch) -> ft.Control:
@@ -1684,57 +1684,6 @@ class GraphCanvas(ft.Container):
             height=_COMPACT_CHECKBOX_SIZE,
             alignment=ft.Alignment.CENTER,
             content=checkbox,
-        )
-
-    def _themed_slider(self, slider: ft.Slider) -> ft.Control:
-        """Wraps `slider` directly in its own themed Container -- no
-        control in between the Theme and the Slider itself.
-
-        `theme=` alone -- even set directly on the Slider's own immediate
-        parent -- turned out not to be the actual fix: confirmed against
-        Flet's own docs example ("Inherited theme with primary color
-        overridden") that a bare `Container.theme=` genuinely does not
-        take effect, full stop, regardless of nesting depth. The
-        example's *working* case ("Unique theme") pairs `theme=` with an
-        explicit `theme_mode=` -- `Container.theme_mode`'s own docstring
-        explains why: it "resets" the parent theme and creates a new,
-        unique scheme for everything inside, which is what actually
-        activates a nested `theme=` override at all. `ThemeMode.DARK`
-        here matches this app's own permanent `page.theme_mode` (set in
-        `app.py`), so nothing about the app's actual appearance changes
-        -- this only exists to switch on the "unique theme" codepath.
-
-        Confirmed on the real build once `theme_mode` made the override
-        genuinely activate (the slider's color scheme visibly changed):
-        `year_2023=True` still left the thumb unchanged -- with
-        `thumb_size` now known to genuinely reach the widget, this means
-        `year_2023`'s classic thumb shape doesn't actually respect
-        `thumb_size` either (the opposite of what its docs implied), so
-        it's dropped here in favor of `thumb_size` alone against the
-        current (M3 "Handle") thumb shape -- untested until now, since
-        every earlier attempt was confounded by the missing `theme_mode`
-        and never got a clean read on `thumb_size` by itself. A "unique"
-        theme also has no ambient color scheme to inherit, which is why
-        the color genuinely changed (to Flutter's stock blue) rather than
-        matching this app's real palette -- `color_scheme` is set here to
-        the exact same values `theme.py`'s own `build_theme()` uses, so a
-        "unique" theme still looks identical to the app's real one.
-        `expand=True` preserves the Slider's existing full-width
-        behavior, which an unconfigured Container would not.
-        """
-        return ft.Container(
-            expand=True,
-            theme_mode=ft.ThemeMode.DARK,
-            theme=ft.Theme(
-                use_material3=True,
-                color_scheme=ft.ColorScheme(
-                    primary=theme.ACCENT, surface=theme.APP_BG, error=theme.ERROR
-                ),
-                slider_theme=ft.SliderTheme(
-                    thumb_size=ft.Size.square(_CATEGORY_SWATCH_DIAMETER),
-                ),
-            ),
-            content=slider,
         )
 
     def _build_filter_section_box(
@@ -1949,7 +1898,7 @@ class GraphCanvas(ft.Container):
                     ],
                 ),
                 self._simulation_strength_caption,
-                self._themed_slider(self._simulation_strength_slider),
+                self._simulation_strength_slider,
             ],
         )
 
@@ -1994,9 +1943,9 @@ class GraphCanvas(ft.Container):
             spacing=6,
             controls=[
                 self._min_zoom_caption,
-                self._themed_slider(self._min_zoom_slider),
+                self._min_zoom_slider,
                 self._max_zoom_caption,
-                self._themed_slider(self._max_zoom_slider),
+                self._max_zoom_slider,
                 ft.Row(
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     controls=[
@@ -2026,7 +1975,7 @@ class GraphCanvas(ft.Container):
         )
         return ft.Column(
             spacing=2,
-            controls=[self._node_spacing_caption, self._themed_slider(self._node_spacing_slider)],
+            controls=[self._node_spacing_caption, self._node_spacing_slider],
         )
 
     def _build_display_settings_section(self) -> ft.Control:

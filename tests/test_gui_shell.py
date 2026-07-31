@@ -1350,91 +1350,31 @@ def test_category_swatches_are_sized_and_spaced_per_the_tuned_constants() -> Non
     canvas = GraphCanvas(_page_stub())
 
     for swatch in canvas._color_swatch_controls.values():
-        assert swatch.width == graph_canvas._CATEGORY_SWATCH_DIAMETER
-        assert swatch.height == graph_canvas._CATEGORY_SWATCH_DIAMETER
-        assert swatch.border_radius == graph_canvas._CATEGORY_SWATCH_DIAMETER / 2
+        assert swatch.width == theme.CATEGORY_SWATCH_DIAMETER
+        assert swatch.height == theme.CATEGORY_SWATCH_DIAMETER
+        assert swatch.border_radius == theme.CATEGORY_SWATCH_DIAMETER / 2
 
     # Categories' rows are spaced wider than Type's despite the smaller
     # swatches -- small circles need comparatively more breathing room.
     assert graph_canvas._CATEGORY_SWATCH_ROW_SPACING > graph_canvas._TYPE_CHECKBOX_ROW_SPACING
 
 
-def test_themed_slider_wraps_directly_in_a_container_with_the_expected_theme() -> None:
-    """Slider has no per-instance thumb-size property (unlike Switch/
-    Checkbox); wrapping it directly in its own themed Container is
-    necessary but not sufficient on its own -- confirmed against Flet's
-    own docs example ("Inherited theme with primary color overridden")
-    that a bare `theme=` genuinely does not take effect regardless of
-    nesting depth. The example's working case pairs `theme=` with an
-    explicit `theme_mode=`, which `Container.theme_mode`'s own docstring
-    explains: it "resets" the parent theme, actually activating a nested
-    override. `ThemeMode.DARK` matches this app's own permanent
-    `page.theme_mode`, so nothing about the app's real appearance
-    changes -- it only switches on the mechanism that makes the override
-    apply at all.
+def test_build_theme_sets_a_page_wide_slider_thumb_size() -> None:
+    """Post-26 fix: a Slider has no per-instance thumb-size property, and
+    -- confirmed directly on the real build -- neither does a nested
+    `Container.theme`/`theme_mode` reliably reach it. A page-wide
+    `page.theme` is the one mechanism Flet's own docs example showed
+    genuinely working, and it's a safe app-wide setting here since this
+    app has no Slider anywhere except the graph canvas Settings panel.
     """
-    canvas = GraphCanvas(_page_stub())
-    slider = ft.Slider(value=1, min=0, max=10)
+    built = theme.build_theme()
 
-    wrapped = canvas._themed_slider(slider)
-
-    assert isinstance(wrapped, ft.Container)
-    assert wrapped.content is slider  # the same instance, not a copy
-    assert wrapped.expand is True  # preserves the slider's full-width behavior
-    assert wrapped.theme_mode == ft.ThemeMode.DARK  # required to activate theme= at all
-    slider_theme = wrapped.theme.slider_theme
-    assert slider_theme.thumb_size.width == graph_canvas._CATEGORY_SWATCH_DIAMETER
-    assert slider_theme.thumb_size.height == graph_canvas._CATEGORY_SWATCH_DIAMETER
-    assert wrapped.theme.use_material3 is True
-    # A "unique" theme has no ambient color scheme to inherit -- without
-    # this, the slider's colors fell back to Flutter's stock blue instead
-    # of matching the app's real palette (confirmed on the real build).
-    color_scheme = wrapped.theme.color_scheme
-    assert color_scheme.primary == theme.ACCENT
-    assert color_scheme.surface == theme.APP_BG
-    assert color_scheme.error == theme.ERROR
-
-
-def _find_container_wrapping(root: ft.Control, target: ft.Control) -> ft.Container | None:
-    """Small tree-search helper: finds a Container whose `.content` is
-    exactly `target`, walking `.content`/`.controls` recursively.
-    """
-    if isinstance(root, ft.Container) and root.content is target:
-        return root
-    children: list[ft.Control] = []
-    content = getattr(root, "content", None)
-    if content is not None:
-        children.append(content)
-    children.extend(getattr(root, "controls", None) or [])
-    for child in children:
-        found = _find_container_wrapping(child, target)
-        if found is not None:
-            return found
-    return None
-
-
-def test_every_settings_panel_slider_is_individually_themed() -> None:
-    """Locks in that all six real sliders (Degrees, Index Connections,
-    Simulation Strength, Min/Max Zoom, Node Spacing) are each wrapped
-    directly by `_themed_slider()` in the actual built tree, not just
-    that the helper itself works in isolation.
-    """
-    canvas = GraphCanvas(_page_stub())
-    sliders = [
-        canvas._degrees_slider,
-        canvas._index_edges_slider,
-        canvas._simulation_strength_slider,
-        canvas._min_zoom_slider,
-        canvas._max_zoom_slider,
-        canvas._node_spacing_slider,
-    ]
-    for slider in sliders:
-        wrapper = _find_container_wrapping(canvas._settings_panel, slider)
-        assert wrapper is not None, f"{slider} is not wrapped in a themed Container"
-        assert wrapper.theme is not None
-        assert wrapper.theme.slider_theme.thumb_size.width == graph_canvas._CATEGORY_SWATCH_DIAMETER
-        assert wrapper.theme_mode == ft.ThemeMode.DARK  # required to activate theme= at all
-        assert wrapper.theme.color_scheme.primary == theme.ACCENT
+    assert built.slider_theme is not None
+    assert built.slider_theme.thumb_size.width == theme.CATEGORY_SWATCH_DIAMETER
+    assert built.slider_theme.thumb_size.height == theme.CATEGORY_SWATCH_DIAMETER
+    # The app's real color scheme is untouched -- page.theme is the
+    # actual live theme, not a "unique" reset that needs its own copy.
+    assert built.color_scheme.primary == theme.ACCENT
 
 
 # --- Colors (Phase 25) -----------------------------------------------------
