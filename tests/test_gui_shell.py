@@ -1270,6 +1270,48 @@ def test_set_filters_is_a_no_op_for_an_unchanged_state() -> None:
     assert canvas._settings_panel.content is panel_content_before
 
 
+# --- Compact switches (Post-26 fix) -----------------------------------------
+
+
+def test_compact_switch_scales_and_wraps_in_a_fixed_size_container() -> None:
+    """`ft.Switch` has no dedicated size property -- this scales it via
+    the generic `LayoutControl` transform and wraps it in a matching
+    fixed-size Container, since `scale` alone only shrinks the paint, not
+    the layout box a Switch reserves in its parent Row/Column.
+    """
+    canvas = GraphCanvas(_page_stub())
+    switch = ft.Switch(value=True)
+
+    wrapped = canvas._compact_switch(switch)
+
+    assert switch.scale == pytest.approx(graph_canvas._COMPACT_SWITCH_SCALE)
+    assert isinstance(wrapped, ft.Container)
+    assert wrapped.width == graph_canvas._COMPACT_SWITCH_WIDTH
+    assert wrapped.height == graph_canvas._COMPACT_SWITCH_HEIGHT
+    assert wrapped.content is switch  # the same instance, not a copy
+
+
+def test_every_settings_panel_switch_is_compact() -> None:
+    """Locks in that all nine switches across Filters (master + six
+    per-dimension) and Display settings (Simulation, Invert Scroll-Zoom)
+    actually go through `_compact_switch()`, not just that the helper
+    itself works.
+    """
+    canvas = GraphCanvas(_page_stub())
+    switches = [
+        canvas._master_switch,
+        canvas._types_switch,
+        canvas._tags_switch,
+        canvas._search_switch,
+        canvas._date_switch,
+        canvas._degrees_switch,
+        canvas._index_edges_switch,
+        canvas._simulation_switch,
+        canvas._invert_scroll_switch,
+    ]
+    assert all(s.scale == pytest.approx(graph_canvas._COMPACT_SWITCH_SCALE) for s in switches)
+
+
 # --- Colors (Phase 25) -----------------------------------------------------
 
 

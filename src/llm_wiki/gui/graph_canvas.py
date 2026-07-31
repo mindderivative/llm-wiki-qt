@@ -42,6 +42,18 @@ _DEFAULT_MAX_ZOOM = 2.0
 _MIN_ZOOM_SLIDER_RANGE = (0.1, 1.0)
 _MAX_ZOOM_SLIDER_RANGE = (1.0, 5.0)
 _NODE_SPACING_SLIDER_RANGE = (1.0, 8.0)
+# Settings panel switches (Post-26 fix): `ft.Switch` has no dedicated
+# size property (confirmed against the installed Flet API) -- its
+# default Material footprint dwarfs this panel's 10.5px labels. `scale`
+# is inherited from the generic `LayoutControl` transform every visual
+# control has, which only shrinks *paint*, not the layout box it
+# reserves -- see GraphCanvas._compact_switch() for why the wrapping
+# Container's fixed size is what actually tightens the box too. Starting
+# values, same "tune against the real UI" framing as every other visual
+# constant in this file.
+_COMPACT_SWITCH_SCALE = 0.7
+_COMPACT_SWITCH_WIDTH = 36.0
+_COMPACT_SWITCH_HEIGHT = 22.0
 # Nominal layout space; the canvas scales to its real size on first resize.
 _BASE_WIDTH = 900.0
 _BASE_HEIGHT = 560.0
@@ -1606,6 +1618,23 @@ class GraphCanvas(ft.Container):
             spacing=2, controls=[self._index_edges_caption, self._index_edges_slider]
         )
 
+    def _compact_switch(self, switch: ft.Switch) -> ft.Control:
+        """Shrinks a Switch to sit visually in scale with this panel's
+        10.5px labels. `scale` alone only shrinks the *paint*, not the
+        layout box a Switch reserves in its parent Row/Column (a generic
+        Flutter transform quirk, not Flet-specific) -- wrapping it in a
+        Container sized to the *scaled* footprint (not the original) and
+        centering it there is what actually tightens the reserved space
+        too, not just the visual.
+        """
+        switch.scale = _COMPACT_SWITCH_SCALE
+        return ft.Container(
+            width=_COMPACT_SWITCH_WIDTH,
+            height=_COMPACT_SWITCH_HEIGHT,
+            alignment=ft.Alignment.CENTER,
+            content=switch,
+        )
+
     def _build_filter_section_box(
         self, title: str, switch: ft.Switch, content: ft.Control
     ) -> ft.Control:
@@ -1629,7 +1658,7 @@ class GraphCanvas(ft.Container):
                             ft.Text(
                                 title, size=10.5, weight=ft.FontWeight.W_600, color=theme.TEXT
                             ),
-                            switch,
+                            self._compact_switch(switch),
                         ],
                     ),
                     content,
@@ -1679,7 +1708,7 @@ class GraphCanvas(ft.Container):
                             weight=ft.FontWeight.W_600,
                             color=theme.TEXT,
                         ),
-                        self._master_switch,
+                        self._compact_switch(self._master_switch),
                     ],
                 ),
                 self._build_filter_section_box(
@@ -1814,7 +1843,7 @@ class GraphCanvas(ft.Container):
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     controls=[
                         ft.Text("Enable Simulation", size=10.5, color=theme.TEXT_TOGGLE_OFF),
-                        self._simulation_switch,
+                        self._compact_switch(self._simulation_switch),
                     ],
                 ),
                 self._simulation_strength_caption,
@@ -1870,7 +1899,7 @@ class GraphCanvas(ft.Container):
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     controls=[
                         ft.Text("Invert Scroll-Zoom", size=10.5, color=theme.TEXT_TOGGLE_OFF),
-                        self._invert_scroll_switch,
+                        self._compact_switch(self._invert_scroll_switch),
                     ],
                 ),
             ],
