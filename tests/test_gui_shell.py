@@ -1378,6 +1378,11 @@ def test_settings_panel_scopes_a_slider_thumb_size_matching_the_swatches() -> No
     # redesign's default "handle" shape (a pill/bar, not a circle)
     # doesn't shrink down cleanly via thumb_size alone.
     assert panel_theme.slider_theme.year_2023 is True
+    # Slider.year_2023's own docs: "If Theme.use_material3 is False,
+    # then this property is ignored" -- explicit here so it's never at
+    # risk of silently no-op'ing regardless of how a nested Container
+    # .theme merges with its ancestor theme.
+    assert panel_theme.use_material3 is True
 
 
 # --- Colors (Phase 25) -----------------------------------------------------

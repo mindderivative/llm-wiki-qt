@@ -1374,11 +1374,22 @@ class GraphCanvas(ft.Container):
             # pre-M3-redesign style (a plain filled circle, the same
             # shape Switch/Checkbox already use), where thumb_size is the
             # well-documented radius/diameter it was expected to be.
+            #
+            # `Slider.year_2023`'s own docs carry one more condition:
+            # "If flet.Theme.use_material3 is False, then this property is
+            # ignored." This nested Theme never set use_material3 at all,
+            # leaving it at the dataclass's own unset default rather than
+            # genuinely inheriting theme.py's app-wide Theme (which also
+            # never sets it, relying on Flutter's own true default) --
+            # explicit here so year_2023 is never at risk of being
+            # silently ignored regardless of how a nested Container.theme
+            # merges with its ancestor.
             theme=ft.Theme(
+                use_material3=True,
                 slider_theme=ft.SliderTheme(
                     thumb_size=ft.Size.square(_CATEGORY_SWATCH_DIAMETER),
                     year_2023=True,
-                )
+                ),
             ),
             content=ft.Column(spacing=8, controls=[header, self._panel_body]),
         )
