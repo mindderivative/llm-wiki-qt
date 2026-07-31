@@ -54,6 +54,25 @@ _NODE_SPACING_SLIDER_RANGE = (1.0, 8.0)
 _COMPACT_SWITCH_SCALE = 0.65
 _COMPACT_SWITCH_WIDTH = 33.0
 _COMPACT_SWITCH_HEIGHT = 20.0
+# Post-26 fix #5 -- uniform sizing across Categories/Type, keyed off the
+# compact switch above. Material 3's own Switch spec (track 52x32dp,
+# "on"-state thumb 24dp diameter -- documented, stable values, not
+# guessed) confirms _COMPACT_SWITCH_WIDTH/HEIGHT were derived correctly
+# in the first place (52 * 0.65 ≈ 33.8, 32 * 0.65 ≈ 20.8). The category
+# color swatches are sized to match that same spec's "on"-thumb diameter
+# at the same scale (24 * 0.65 ≈ 15.6, rounded).
+_CATEGORY_SWATCH_DIAMETER = 16.0
+# Type checkboxes shrink to a square matching the switch's own height
+# (its full track, "including its borders") -- Checkbox's default
+# Material footprint, like Switch's, is bigger than its visible box, so
+# it needs the same scale + fixed-box technique as _compact_switch().
+_COMPACT_CHECKBOX_SIZE = _COMPACT_SWITCH_HEIGHT
+_COMPACT_CHECKBOX_SCALE = 0.75
+# Row spacing tightened per explicit ratios: Type's checkbox rows first
+# shrink to 3/4 of their prior spacing (2.0 -> 1.5), then Categories'
+# swatch rows are set to 3/4 of *that* new, tighter Type spacing.
+_TYPE_CHECKBOX_ROW_SPACING = 1.5
+_CATEGORY_SWATCH_ROW_SPACING = 1.125
 # Nominal layout space; the canvas scales to its real size on first resize.
 _BASE_WIDTH = 900.0
 _BASE_HEIGHT = 560.0
@@ -1349,7 +1368,7 @@ class GraphCanvas(ft.Container):
             self._build_color_picker_row(type_key, label)
             for type_key, label in (*_FILTER_NOTE_TYPE_LABELS, (_GRAVITY_WELL_SLUG, "Index"))
         ]
-        return ft.Column(spacing=5, controls=rows)
+        return ft.Column(spacing=_CATEGORY_SWATCH_ROW_SPACING, controls=rows)
 
     def _build_color_picker_row(self, type_key: str, label: str) -> ft.Control:
         """A `PopupMenuButton` wrapping a `Row(wrap=True)` of clickable
@@ -1362,7 +1381,10 @@ class GraphCanvas(ft.Container):
         against the live graph before settling on one.
         """
         trigger_swatch = ft.Container(
-            width=8, height=8, border_radius=4, bgcolor=self._type_colors[type_key]
+            width=_CATEGORY_SWATCH_DIAMETER,
+            height=_CATEGORY_SWATCH_DIAMETER,
+            border_radius=_CATEGORY_SWATCH_DIAMETER / 2,
+            bgcolor=self._type_colors[type_key],
         )
         self._color_swatch_controls[type_key] = trigger_swatch
         palette = ft.Row(
@@ -1533,10 +1555,13 @@ class GraphCanvas(ft.Container):
             rows.append(
                 ft.Row(
                     spacing=4,
-                    controls=[checkbox, ft.Text(label, size=10.5, color=theme.TEXT_TOGGLE_OFF)],
+                    controls=[
+                        self._compact_checkbox(checkbox),
+                        ft.Text(label, size=10.5, color=theme.TEXT_TOGGLE_OFF),
+                    ],
                 )
             )
-        return ft.Column(spacing=2, controls=rows)
+        return ft.Column(spacing=_TYPE_CHECKBOX_ROW_SPACING, controls=rows)
 
     def _build_search_content(self) -> ft.Control:
         self._search_field = ft.TextField(
@@ -1633,6 +1658,22 @@ class GraphCanvas(ft.Container):
             height=_COMPACT_SWITCH_HEIGHT,
             alignment=ft.Alignment.CENTER,
             content=switch,
+        )
+
+    def _compact_checkbox(self, checkbox: ft.Checkbox) -> ft.Control:
+        """Same technique as `_compact_switch()`, sized to match it: a
+        Checkbox's default Material footprint is likewise bigger than its
+        visible box, so `scale` (paint-only) plus a fixed-size Container
+        (`_COMPACT_CHECKBOX_SIZE` -- a square matching the compact
+        switch's own height) is needed to actually tighten both the
+        visual and the reserved layout space.
+        """
+        checkbox.scale = _COMPACT_CHECKBOX_SCALE
+        return ft.Container(
+            width=_COMPACT_CHECKBOX_SIZE,
+            height=_COMPACT_CHECKBOX_SIZE,
+            alignment=ft.Alignment.CENTER,
+            content=checkbox,
         )
 
     def _build_filter_section_box(

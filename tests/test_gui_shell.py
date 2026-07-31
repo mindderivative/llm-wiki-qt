@@ -1312,6 +1312,53 @@ def test_every_settings_panel_switch_is_compact() -> None:
     assert all(s.scale == pytest.approx(graph_canvas._COMPACT_SWITCH_SCALE) for s in switches)
 
 
+def test_compact_checkbox_scales_and_wraps_in_a_fixed_square_matching_switch_height() -> None:
+    """Post-26 fix #5: same technique as `_compact_switch()` -- Checkbox's
+    default Material footprint is likewise bigger than its visible box.
+    The target square is sized to match the compact switch's own height,
+    per the explicit "same height including its borders, square" ask.
+    """
+    canvas = GraphCanvas(_page_stub())
+    checkbox = ft.Checkbox(value=True)
+
+    wrapped = canvas._compact_checkbox(checkbox)
+
+    assert checkbox.scale == pytest.approx(graph_canvas._COMPACT_CHECKBOX_SCALE)
+    assert isinstance(wrapped, ft.Container)
+    assert wrapped.width == graph_canvas._COMPACT_CHECKBOX_SIZE
+    assert wrapped.height == graph_canvas._COMPACT_CHECKBOX_SIZE
+    assert wrapped.width == wrapped.height  # square
+    assert wrapped.width == graph_canvas._COMPACT_SWITCH_HEIGHT  # matches the switch's height
+    assert wrapped.content is checkbox  # the same instance, not a copy
+
+
+def test_every_type_checkbox_is_compact() -> None:
+    canvas = GraphCanvas(_page_stub())
+    assert all(
+        cb.scale == pytest.approx(graph_canvas._COMPACT_CHECKBOX_SCALE)
+        for cb in canvas._type_checkboxes.values()
+    )
+
+
+def test_category_swatches_match_the_switch_thumbs_diameter_and_tightened_spacing() -> None:
+    """Locks in the swatch diameter (matching Material 3's 24dp "on"-thumb
+    at the same 0.65 scale the compact switch already uses) and the two
+    explicit spacing ratios: Type's checkbox rows tighten to 3/4 of their
+    prior spacing, and Categories' swatch rows tighten to 3/4 of *that*.
+    """
+    canvas = GraphCanvas(_page_stub())
+
+    for swatch in canvas._color_swatch_controls.values():
+        assert swatch.width == graph_canvas._CATEGORY_SWATCH_DIAMETER
+        assert swatch.height == graph_canvas._CATEGORY_SWATCH_DIAMETER
+        assert swatch.border_radius == graph_canvas._CATEGORY_SWATCH_DIAMETER / 2
+
+    assert pytest.approx(2.0 * 0.75) == graph_canvas._TYPE_CHECKBOX_ROW_SPACING
+    assert pytest.approx(
+        graph_canvas._TYPE_CHECKBOX_ROW_SPACING * 0.75
+    ) == graph_canvas._CATEGORY_SWATCH_ROW_SPACING
+
+
 # --- Colors (Phase 25) -----------------------------------------------------
 
 
