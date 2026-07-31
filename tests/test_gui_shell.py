@@ -614,6 +614,80 @@ def test_set_settings_panel_expanded_is_a_no_op_for_the_same_value() -> None:
     assert canvas._panel_body.visible is True
 
 
+# --- Settings-into-popups restructure (Phase 27) --------------------------
+
+
+def test_build_popup_section_wraps_content_in_a_non_auto_closing_popup() -> None:
+    """The shared helper: a card-styled trigger (title + chevron) and a
+    single `PopupMenuItem` wrapping the given content at the given
+    width/height -- the same non-auto-closing pattern Tags/Colors already
+    established (Post-24 fix #3, Phase 25).
+    """
+    canvas = GraphCanvas(_page_stub())
+    marker = ft.Text("marker")
+
+    popup = canvas._build_popup_section("A Title", marker, width=200, height=150)
+
+    assert isinstance(popup, ft.PopupMenuButton)
+    trigger_row = popup.content.content
+    assert trigger_row.controls[0].value == "A Title"
+    assert len(popup.items) == 1
+    item_container = popup.items[0].content
+    assert item_container.width == 200
+    assert item_container.height == 150
+    assert item_container.content is marker
+
+
+def test_filters_physics_zoom_pan_layout_are_each_wrapped_in_their_own_popup() -> None:
+    """Filters, Physics/Animation, Zoom & Pan, and Layout are each only
+    reachable via a `PopupMenuButton` now -- not inline in `_panel_body`'s
+    controls list, unlike Categories (which stays inline/ungrouped per an
+    explicit user decision not to nest 5 more popups for no real gain).
+    """
+    canvas = GraphCanvas(_page_stub())
+
+    controls = canvas._panel_body.content.controls
+    popups = [c for c in controls if isinstance(c, ft.PopupMenuButton)]
+    titles = [popup.content.content.controls[0].value for popup in popups]
+
+    assert titles == ["Filters", "Physics / Animation", "Zoom & Pan", "Layout"]
+    # Categories' own legend rows are still directly inline, not a popup.
+    assert not any(isinstance(c, ft.PopupMenuButton) for c in [controls[0], controls[1]])
+
+
+def test_filters_popup_section_has_a_capped_height_and_the_filters_content() -> None:
+    canvas = GraphCanvas(_page_stub())
+
+    controls = canvas._panel_body.content.controls
+    filters_popup = next(c for c in controls if isinstance(c, ft.PopupMenuButton))
+    item_container = filters_popup.items[0].content
+
+    assert item_container.height == 420
+    assert item_container.content.controls[0].controls[0].value == "Enable Filters"
+
+
+def test_filters_section_column_is_scrollable() -> None:
+    """`_build_filters_section()`'s own Column needs its own scroll now
+    that it's popup content with a capped height, no longer living inside
+    the (now much shorter) always-scrollable `_panel_body`.
+    """
+    canvas = GraphCanvas(_page_stub())
+
+    filters_column = canvas._build_filters_section()
+
+    assert filters_column.scroll == ft.ScrollMode.AUTO
+
+
+def test_panel_body_has_no_fixed_height() -> None:
+    """The whole point of this phase: the always-visible panel body
+    shrinks to its now-much-shorter natural content height instead of
+    reserving a fixed 480px.
+    """
+    canvas = GraphCanvas(_page_stub())
+
+    assert canvas._panel_body.height is None
+
+
 # --- Filters (Phase 24) --------------------------------------------------
 
 

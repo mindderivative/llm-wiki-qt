@@ -1335,9 +1335,6 @@ class GraphCanvas(ft.Container):
             ],
         )
         self._panel_body = ft.Container(
-            # Phase 24 (Filters) made this section genuinely tall -- capped
-            # height + scroll instead of growing to cover the graph.
-            height=480,
             visible=self._settings_panel_expanded,
             content=ft.Column(
                 spacing=10,
@@ -1346,11 +1343,14 @@ class GraphCanvas(ft.Container):
                     self._section_label("CATEGORIES"),
                     self._build_legend_section(),
                     ft.Container(height=1, bgcolor=theme.BORDER),
-                    self._section_label("FILTERS"),
-                    self._build_filters_section(),
-                    ft.Container(height=1, bgcolor=theme.BORDER),
-                    self._section_label("DISPLAY"),
-                    self._build_display_settings_section(),
+                    self._build_popup_section(
+                        "Filters", self._build_filters_section(), height=420
+                    ),
+                    self._build_popup_section(
+                        "Physics / Animation", self._build_physics_content()
+                    ),
+                    self._build_popup_section("Zoom & Pan", self._build_zoom_pan_content()),
+                    self._build_popup_section("Layout", self._build_layout_content()),
                 ],
             ),
         )
@@ -1367,6 +1367,37 @@ class GraphCanvas(ft.Container):
 
     def _section_label(self, text: str) -> ft.Control:
         return ft.Text(text, size=11, color=theme.TEXT_MUTED, weight=ft.FontWeight.W_500)
+
+    def _build_popup_section(
+        self, title: str, content: ft.Control, *, width: float = 236, height: float | None = None
+    ) -> ft.Control:
+        """A card-styled `PopupMenuButton` trigger opening `content` in a
+        popup -- the same non-auto-closing `PopupMenuItem`-wrapping-a-
+        plain-`Container` pattern the Tags filter and Colors picker
+        already established (Post-24 fix #3, Phase 25), reused here to
+        keep the settings panel's always-visible height short regardless
+        of how many sections it holds.
+        """
+        trigger = ft.Container(
+            padding=ft.Padding(8, 6, 8, 6),
+            bgcolor=theme.CARD_BG,
+            border=ft.Border.all(1, theme.BORDER),
+            border_radius=6,
+            content=ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                controls=[
+                    ft.Text(title, size=10.5, weight=ft.FontWeight.W_600, color=theme.TEXT),
+                    ft.Text("▾", size=10, color=theme.TEXT_TOGGLE_OFF),
+                ],
+            ),
+        )
+        return ft.PopupMenuButton(
+            content=trigger,
+            menu_padding=ft.Padding(8, 8, 8, 8),
+            items=[
+                ft.PopupMenuItem(content=ft.Container(width=width, height=height, content=content))
+            ],
+        )
 
     def _build_legend_section(self) -> ft.Control:
         """Phase 25: an interactive color picker per real note type (plus
@@ -1772,6 +1803,7 @@ class GraphCanvas(ft.Container):
 
         return ft.Column(
             spacing=8,
+            scroll=ft.ScrollMode.AUTO,
             controls=[
                 ft.Row(
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -1866,27 +1898,6 @@ class GraphCanvas(ft.Container):
             self._index_edges_switch.update()
 
     # --- Display settings (Phase 25: Physics/Animation, Zoom & Pan) ------------
-
-    def _build_settings_section_box(self, title: str, content: ft.Control) -> ft.Control:
-        """A simpler sibling to `_build_filter_section_box()` -- same
-        bordered/labeled shape, minus the per-section enable `Switch`:
-        neither Physics/Animation nor Zoom & Pan has an "enable this
-        whole dimension" concept the way a Filter does (Physics's own
-        "Enable Simulation" switch already lives *inside* its content).
-        """
-        return ft.Container(
-            padding=ft.Padding(8, 6, 8, 6),
-            bgcolor=theme.CARD_BG,
-            border=ft.Border.all(1, theme.BORDER),
-            border_radius=6,
-            content=ft.Column(
-                spacing=6,
-                controls=[
-                    ft.Text(title, size=10.5, weight=ft.FontWeight.W_600, color=theme.TEXT),
-                    content,
-                ],
-            ),
-        )
 
     def _simulation_strength_caption_text(self) -> str:
         return f"Strength: {self._simulation_strength:.2f}x"
@@ -2001,18 +2012,6 @@ class GraphCanvas(ft.Container):
             controls=[
                 self._node_spacing_caption,
                 self._compact_slider(self._node_spacing_slider),
-            ],
-        )
-
-    def _build_display_settings_section(self) -> ft.Control:
-        return ft.Column(
-            spacing=8,
-            controls=[
-                self._build_settings_section_box(
-                    "Physics / Animation", self._build_physics_content()
-                ),
-                self._build_settings_section_box("Zoom & Pan", self._build_zoom_pan_content()),
-                self._build_settings_section_box("Layout", self._build_layout_content()),
             ],
         )
 
