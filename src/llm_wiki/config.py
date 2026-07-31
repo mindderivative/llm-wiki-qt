@@ -113,6 +113,14 @@ class GraphViewConfig(BaseModel):
     # must start off.
     filter_degrees_enabled: bool = False
 
+    # Phase 26 -- caps index's own edges to its N most-recently-updated
+    # neighbors when index is selected. Defaults False, the same
+    # exception filter_degrees_enabled already makes: turning it on would
+    # immediately and silently change what renders the next time index
+    # happens to get selected.
+    filter_index_edges_enabled: bool = False
+    filter_index_edge_limit: int = 10
+
     # Phase 25 -- Colors / Physics / Zoom & Pan. type_colors stores only
     # what's actually been customized (an empty dict, the default, means
     # "use the built-in defaults") -- GraphCanvas always merges this over

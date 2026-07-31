@@ -272,6 +272,8 @@ class Shell:
                 search_enabled=gv.filter_search_enabled,
                 date_enabled=gv.filter_date_enabled,
                 degrees_enabled=gv.filter_degrees_enabled,
+                index_edges_enabled=gv.filter_index_edges_enabled,
+                index_edge_limit=gv.filter_index_edge_limit,
             )
         )
         self.graph.set_display_settings(
@@ -337,6 +339,8 @@ class Shell:
         gv.filter_search_enabled = state.search_enabled
         gv.filter_date_enabled = state.date_enabled
         gv.filter_degrees_enabled = state.degrees_enabled
+        gv.filter_index_edges_enabled = state.index_edges_enabled
+        gv.filter_index_edge_limit = state.index_edge_limit
         self.controller.save_settings()
 
     def _on_graph_display_settings_changed(self, state: GraphDisplaySettings) -> None:

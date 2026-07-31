@@ -159,6 +159,9 @@ class GraphFilterState(NamedTuple):
     search_enabled: bool
     date_enabled: bool
     degrees_enabled: bool
+    # Phase 26 -- caps index's own edges when it's selected.
+    index_edges_enabled: bool
+    index_edge_limit: int
 
 
 class GraphDisplaySettings(NamedTuple):
@@ -253,6 +256,13 @@ class GraphCanvas(ft.Container):
         self._filter_search_enabled = True
         self._filter_date_enabled = True
         self._filter_degrees_enabled = False
+        # Phase 26 -- caps index's own edges when it's selected. Defaults
+        # False, the same exception filter_degrees_enabled already makes
+        # among the per-dimension switches: turning it on would
+        # immediately and silently change what renders the next time
+        # index happens to get selected.
+        self._filter_index_edges_enabled = False
+        self._filter_index_edge_limit = 10
         # Recomputed in _notify_selection() whenever self._selected changes
         # -- see _passes_filters() and _update_degrees_from_selected().
         self._degrees_from_selected: dict[str, int] = {}
@@ -872,6 +882,12 @@ class GraphCanvas(ft.Container):
         self._degrees_caption.value = self._degrees_caption_text()
         with contextlib.suppress(RuntimeError):
             self._degrees_caption.update()
+        # Phase 26: the Index Connections caption reads self._selected too
+        # ("Applies once index is selected" / "Showing N of M connections"),
+        # the same staleness class already fixed once for Degrees above.
+        self._index_edges_caption.value = self._index_edges_caption_text()
+        with contextlib.suppress(RuntimeError):
+            self._index_edges_caption.update()
         self._redraw_all()
 
     def _update_degrees_from_selected(self) -> None:
@@ -954,6 +970,43 @@ class GraphCanvas(ft.Container):
                 return False
 
         return True
+
+    def _compute_index_edge_limit_visible(self) -> set[str]:
+        """Which of `index`'s own neighbors get an edge drawn when the cap
+        (Phase 26) is active -- most-recently-updated first (`updated_at`,
+        already on every node's graph attributes since Phase 24), the same
+        stable signal `_neighbor_reposition_targets()`-adjacent code has no
+        equivalent for since layout position is arbitrary. Only ranks
+        neighbors that already pass every *other* active filter, so the
+        cap's budget is never spent on a node that wouldn't render anyway.
+        Computed fresh on every call, not cached -- cheap at this project's
+        real vault scale (a sort over tens of neighbors), and simpler than
+        invalidating a cache across the many places filter/selection state
+        can change.
+        """
+        if _GRAVITY_WELL_SLUG not in self._graph:
+            return set()
+        neighbors = set(self._graph.predecessors(_GRAVITY_WELL_SLUG)) | set(
+            self._graph.successors(_GRAVITY_WELL_SLUG)
+        )
+        neighbors = {slug for slug in neighbors if self._passes_filters(slug)}
+        ranked = sorted(
+            neighbors,
+            key=lambda slug: self._graph.nodes[slug].get("updated_at") or "",
+            reverse=True,
+        )
+        return set(ranked[: self._filter_index_edge_limit])
+
+    def _index_edge_visible(self, neighbor: str, limit_visible: set[str] | None) -> bool:
+        """Whether an edge from `index` to `neighbor` should render. Only
+        ever hides the edge *line* -- the neighbor's own node circle (and
+        any of its other edges, e.g. to a source note) is unaffected,
+        matching the literal ask ("link lines... showed to the Nth
+        degree," not nodes hidden).
+        """
+        if self._selected != _GRAVITY_WELL_SLUG or not self._filter_index_edges_enabled:
+            return True
+        return limit_visible is not None and neighbor in limit_visible
 
     def zoom_in(self, e=None) -> None:
         self._set_zoom(self._zoom + _ZOOM_STEP)
@@ -1067,11 +1120,20 @@ class GraphCanvas(ft.Container):
         dynamic = self._dynamic_slugs()
         edge_paint = ft.Paint(color=theme.GRAPH_EDGE, stroke_width=1.8)
         shapes: list[cv.Shape] = []
+        index_edge_limit_visible = (
+            self._compute_index_edge_limit_visible()
+            if self._selected == _GRAVITY_WELL_SLUG and self._filter_index_edges_enabled
+            else None
+        )
         for u, v in self._graph.edges():
             if u in dynamic or v in dynamic:
                 continue
             if not (self._passes_filters(u) and self._passes_filters(v)):
                 continue
+            if _GRAVITY_WELL_SLUG in (u, v):
+                neighbor = v if u == _GRAVITY_WELL_SLUG else u
+                if not self._index_edge_visible(neighbor, index_edge_limit_visible):
+                    continue
             shape = self._edge_shape(u, v, edge_paint)
             if shape is not None:
                 shapes.append(shape)
@@ -1090,10 +1152,19 @@ class GraphCanvas(ft.Container):
         edge_paint = ft.Paint(color=theme.GRAPH_EDGE, stroke_width=1.8)
         shapes: list[cv.Shape] = []
         static_endpoints: set[str] = set()
+        index_edge_limit_visible = (
+            self._compute_index_edge_limit_visible()
+            if self._selected == _GRAVITY_WELL_SLUG and self._filter_index_edges_enabled
+            else None
+        )
         for u, v in self._graph.edges():
             if u in dynamic or v in dynamic:
                 if not (self._passes_filters(u) and self._passes_filters(v)):
                     continue
+                if _GRAVITY_WELL_SLUG in (u, v):
+                    neighbor = v if u == _GRAVITY_WELL_SLUG else u
+                    if not self._index_edge_visible(neighbor, index_edge_limit_visible):
+                        continue
                 shape = self._edge_shape(u, v, edge_paint)
                 if shape is not None:
                     shapes.append(shape)
@@ -1483,6 +1554,30 @@ class GraphCanvas(ft.Container):
         )
         return ft.Column(spacing=2, controls=[self._degrees_caption, self._degrees_slider])
 
+    def _index_edges_caption_text(self) -> str:
+        if self._selected != _GRAVITY_WELL_SLUG:
+            return "Applies once index is selected"
+        if not self._filter_index_edges_enabled:
+            return "Showing all connections"
+        total = self._graph.degree(_GRAVITY_WELL_SLUG) if _GRAVITY_WELL_SLUG in self._graph else 0
+        return f"Showing {min(self._filter_index_edge_limit, total)} of {total} connections"
+
+    def _build_index_edges_content(self) -> ft.Control:
+        self._index_edges_caption = ft.Text(
+            self._index_edges_caption_text(), size=10, color=theme.TEXT_MUTED
+        )
+        self._index_edges_slider = ft.Slider(
+            min=1,
+            max=30,
+            divisions=29,
+            value=self._filter_index_edge_limit,
+            label="{value}",
+            on_change=lambda e: self._on_filter_index_edge_limit_changed(int(e.control.value)),
+        )
+        return ft.Column(
+            spacing=2, controls=[self._index_edges_caption, self._index_edges_slider]
+        )
+
     def _build_filter_section_box(
         self, title: str, switch: ft.Switch, content: ft.Control
     ) -> ft.Control:
@@ -1539,6 +1634,10 @@ class GraphCanvas(ft.Container):
             value=self._filter_degrees_enabled,
             on_change=lambda e: self._on_filter_degrees_enabled_toggled(e.control.value),
         )
+        self._index_edges_switch = ft.Switch(
+            value=self._filter_index_edges_enabled,
+            on_change=lambda e: self._on_filter_index_edges_enabled_toggled(e.control.value),
+        )
 
         return ft.Column(
             spacing=8,
@@ -1569,6 +1668,11 @@ class GraphCanvas(ft.Container):
                 ),
                 self._build_filter_section_box(
                     "Degrees from Selected", self._degrees_switch, self._build_degrees_content()
+                ),
+                self._build_filter_section_box(
+                    "Index Connections",
+                    self._index_edges_switch,
+                    self._build_index_edges_content(),
                 ),
                 ft.Container(
                     padding=ft.Padding(9, 5, 9, 5),
@@ -1609,12 +1713,18 @@ class GraphCanvas(ft.Container):
         with contextlib.suppress(RuntimeError):
             self._degrees_slider.update()
             self._degrees_caption.update()
+        self._index_edges_slider.value = self._filter_index_edge_limit
+        self._index_edges_caption.value = self._index_edges_caption_text()
+        with contextlib.suppress(RuntimeError):
+            self._index_edges_slider.update()
+            self._index_edges_caption.update()
         self._master_switch.value = self._filters_enabled
         self._types_switch.value = self._filter_types_enabled
         self._tags_switch.value = self._filter_tags_enabled
         self._search_switch.value = self._filter_search_enabled
         self._date_switch.value = self._filter_date_enabled
         self._degrees_switch.value = self._filter_degrees_enabled
+        self._index_edges_switch.value = self._filter_index_edges_enabled
         with contextlib.suppress(RuntimeError):
             self._master_switch.update()
             self._types_switch.update()
@@ -1622,6 +1732,7 @@ class GraphCanvas(ft.Container):
             self._search_switch.update()
             self._date_switch.update()
             self._degrees_switch.update()
+            self._index_edges_switch.update()
 
     # --- Display settings (Phase 25: Physics/Animation, Zoom & Pan) ------------
 
@@ -1974,6 +2085,8 @@ class GraphCanvas(ft.Container):
             search_enabled=self._filter_search_enabled,
             date_enabled=self._filter_date_enabled,
             degrees_enabled=self._filter_degrees_enabled,
+            index_edges_enabled=self._filter_index_edges_enabled,
+            index_edge_limit=self._filter_index_edge_limit,
         )
 
     def _apply_filter_change(self) -> None:
@@ -2076,6 +2189,24 @@ class GraphCanvas(ft.Container):
         self._filter_degrees_enabled = enabled
         self._apply_filter_change()
 
+    def _on_filter_index_edge_limit_changed(self, value: int) -> None:
+        self._filter_index_edge_limit = value
+        self._index_edges_caption.value = self._index_edges_caption_text()
+        with contextlib.suppress(RuntimeError):
+            self._index_edges_caption.update()
+        self._apply_filter_change()
+
+    def _on_filter_index_edges_enabled_toggled(self, enabled: bool) -> None:
+        self._filter_index_edges_enabled = enabled
+        # Unlike the other five switches, this caption's text itself
+        # depends on whether the dimension is enabled ("Showing all
+        # connections" vs. "Showing N of M") -- so the toggle needs to
+        # mutate it, not just apply the filter change.
+        self._index_edges_caption.value = self._index_edges_caption_text()
+        with contextlib.suppress(RuntimeError):
+            self._index_edges_caption.update()
+        self._apply_filter_change()
+
     def _on_filters_reset(self, e=None) -> None:
         self._filter_types = {t for t, _label in _FILTER_NOTE_TYPE_LABELS}
         self._filter_tags = set()
@@ -2089,6 +2220,8 @@ class GraphCanvas(ft.Container):
         self._filter_search_enabled = True
         self._filter_date_enabled = True
         self._filter_degrees_enabled = False  # see __init__'s comment on why
+        self._filter_index_edges_enabled = False  # see __init__'s comment on why
+        self._filter_index_edge_limit = 10
         self._sync_filter_controls_to_state()
         self._apply_filter_change()
 
@@ -2111,6 +2244,8 @@ class GraphCanvas(ft.Container):
         self._filter_search_enabled = state.search_enabled
         self._filter_date_enabled = state.date_enabled
         self._filter_degrees_enabled = state.degrees_enabled
+        self._filter_index_edges_enabled = state.index_edges_enabled
+        self._filter_index_edge_limit = state.index_edge_limit
         if self._selected is not None and not self._passes_filters(self._selected):
             self._selected = None
             self._update_info_overlay()

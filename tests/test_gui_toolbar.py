@@ -356,6 +356,8 @@ def test_graph_filters_changed_is_a_no_op_without_a_vault(page):
         search_enabled=True,
         date_enabled=True,
         degrees_enabled=False,
+        index_edges_enabled=False,
+        index_edge_limit=10,
     )
 
     shell._on_graph_filters_changed(state)  # must not raise
@@ -383,6 +385,8 @@ def test_graph_filters_changed_persists_when_a_vault_is_open(page, vault_root: P
         search_enabled=True,
         date_enabled=True,
         degrees_enabled=True,
+        index_edges_enabled=True,
+        index_edge_limit=5,
     )
 
     try:
@@ -400,11 +404,15 @@ def test_graph_filters_changed_persists_when_a_vault_is_open(page, vault_root: P
         assert gv.filters_enabled is False
         assert gv.filter_tags_enabled is False
         assert gv.filter_degrees_enabled is True
+        assert gv.filter_index_edges_enabled is True
+        assert gv.filter_index_edge_limit == 5
 
         reloaded = AppSettings.load(vault_root / ".llm-wiki-config")
         assert reloaded.graph_view.filter_types == ["concept", "entity"]
         assert reloaded.graph_view.filter_degrees == 2
         assert reloaded.graph_view.filters_enabled is False
+        assert reloaded.graph_view.filter_index_edges_enabled is True
+        assert reloaded.graph_view.filter_index_edge_limit == 5
     finally:
         shell.raw_watcher.stop()  # opening the vault started it (auto_watch_raw defaults on)
 

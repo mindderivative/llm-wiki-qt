@@ -899,6 +899,164 @@ def test_selecting_a_node_updates_the_degrees_caption_directly() -> None:
     assert canvas._degrees_caption.value == "Applies once you select a node"
 
 
+# --- Index Connections (Phase 26) ------------------------------------------
+
+
+def test_compute_index_edge_limit_visible_ranks_by_updated_at_descending() -> None:
+    canvas = _filters_canvas()
+    canvas._filter_index_edge_limit = 2
+
+    # note-b (2026-06-01) and note-c (2026-03-01) are more recently updated
+    # than note-a (2026-01-01).
+    assert canvas._compute_index_edge_limit_visible() == {"note-b", "note-c"}
+
+
+def test_compute_index_edge_limit_visible_returns_everyone_under_the_limit() -> None:
+    canvas = _filters_canvas()
+    canvas._filter_index_edge_limit = 10
+
+    assert canvas._compute_index_edge_limit_visible() == {"note-a", "note-b", "note-c"}
+
+
+def test_compute_index_edge_limit_visible_excludes_neighbors_failing_other_filters() -> None:
+    canvas = _filters_canvas()
+    canvas._filter_types = {"entity", "source"}  # excludes note-a (concept)
+    canvas._filter_index_edge_limit = 10
+
+    assert canvas._compute_index_edge_limit_visible() == {"note-b", "note-c"}
+
+
+def test_compute_index_edge_limit_visible_is_empty_without_an_index_node() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._graph = nx.DiGraph()
+    canvas._graph.add_node("solo")
+
+    assert canvas._compute_index_edge_limit_visible() == set()
+
+
+def test_index_edge_visible_true_when_not_selecting_index() -> None:
+    canvas = _filters_canvas()
+    canvas._filter_index_edges_enabled = True
+    canvas._selected = "note-a"
+
+    assert canvas._index_edge_visible("note-b", set()) is True
+
+
+def test_index_edge_visible_true_when_switch_off() -> None:
+    canvas = _filters_canvas()
+    canvas._selected = "index"
+    canvas._filter_index_edges_enabled = False
+
+    assert canvas._index_edge_visible("note-a", set()) is True
+
+
+def test_index_edge_visible_gated_by_the_precomputed_set() -> None:
+    canvas = _filters_canvas()
+    canvas._selected = "index"
+    canvas._filter_index_edges_enabled = True
+
+    assert canvas._index_edge_visible("note-b", {"note-b", "note-c"}) is True
+    assert canvas._index_edge_visible("note-a", {"note-b", "note-c"}) is False
+
+
+def test_capped_index_edge_is_excluded_but_the_neighbor_circle_still_renders() -> None:
+    canvas = _filters_canvas()
+    canvas._selected = "index"
+    canvas._filter_index_edges_enabled = True
+    canvas._filter_index_edge_limit = 1
+
+    shapes = canvas._build_static_shapes()
+    lines = [s for s in shapes if isinstance(s, cv.Line)]
+    circles = [s for s in shapes if isinstance(s, cv.Circle)]
+
+    # Only the most-recently-updated neighbor's edge to index survives,
+    # plus the note-a/note-b edge (doesn't touch index, unaffected).
+    assert len(lines) == 2
+    assert len(circles) == 4  # every node's circle still renders
+
+
+def test_index_edges_switch_off_shows_all_connections_even_when_index_is_selected() -> None:
+    canvas = _filters_canvas()
+    canvas._selected = "index"
+    canvas._filter_index_edges_enabled = False
+    canvas._filter_index_edge_limit = 1
+
+    lines = [s for s in canvas._build_static_shapes() if isinstance(s, cv.Line)]
+
+    assert len(lines) == 4
+
+
+def test_dragging_index_still_respects_the_cap_in_the_dynamic_shape_builder() -> None:
+    canvas = _filters_canvas()
+    canvas._selected = "index"
+    canvas._filter_index_edges_enabled = True
+    canvas._filter_index_edge_limit = 1
+    canvas._dragging = "index"  # index itself is in the dynamic set while dragged
+
+    shapes = canvas._build_dynamic_shapes()
+    lines = [s for s in shapes if isinstance(s, cv.Line)]
+    circles = [s for s in shapes if isinstance(s, cv.Circle)]
+
+    assert len(lines) == 1  # only the most-recently-updated neighbor's edge
+    assert len(circles) == 2  # index's own circle + that neighbor's shadow circle
+
+
+def test_index_edges_switch_toggle_does_not_rebuild_the_settings_panel() -> None:
+    canvas = _filters_canvas()
+    panel_content_before = canvas._settings_panel.content
+
+    canvas._on_filter_index_edges_enabled_toggled(True)
+
+    assert canvas._settings_panel.content is panel_content_before
+    assert canvas._filter_index_edges_enabled is True
+
+
+def test_index_edge_limit_slider_change_does_not_rebuild_the_settings_panel() -> None:
+    canvas = _filters_canvas()
+    canvas._selected = "index"
+    canvas._redraw_all()
+    panel_content_before = canvas._settings_panel.content
+
+    canvas._on_filter_index_edge_limit_changed(5)
+
+    assert canvas._settings_panel.content is panel_content_before
+    assert canvas._filter_index_edge_limit == 5
+
+
+def test_index_edges_caption_text_in_each_state() -> None:
+    canvas = _filters_canvas()
+    assert canvas._index_edges_caption_text() == "Applies once index is selected"
+
+    canvas._selected = "index"
+    assert canvas._index_edges_caption_text() == "Showing all connections"
+
+    canvas._filter_index_edges_enabled = True
+    canvas._filter_index_edge_limit = 2
+    assert canvas._index_edges_caption_text() == "Showing 2 of 3 connections"
+
+    canvas._filter_index_edge_limit = 10
+    assert canvas._index_edges_caption_text() == "Showing 3 of 3 connections"
+
+
+def test_selecting_index_updates_the_index_edges_caption_directly() -> None:
+    """Regression, the same staleness class Post-24 fix #3 already fixed
+    once for the Degrees caption: the Index Connections caption reads
+    `self._selected` too, so it must be mutated from `_notify_selection()`.
+    """
+    canvas = _filters_canvas()
+    assert canvas._index_edges_caption.value == "Applies once index is selected"
+
+    canvas._selected = "index"
+    canvas._notify_selection()
+
+    assert canvas._index_edges_caption.value == "Showing all connections"
+
+    canvas._selected = None
+    canvas._notify_selection()
+
+    assert canvas._index_edges_caption.value == "Applies once index is selected"
+
+
 # --- Master and per-dimension enable switches (Post-24 fix) ---------------
 
 
@@ -942,6 +1100,8 @@ def test_filters_reset_restores_defaults_and_fires_the_callback() -> None:
     canvas._filters_enabled = False
     canvas._filter_types_enabled = False
     canvas._filter_degrees_enabled = True
+    canvas._filter_index_edges_enabled = True
+    canvas._filter_index_edge_limit = 25
 
     canvas._on_filters_reset()
 
@@ -953,6 +1113,8 @@ def test_filters_reset_restores_defaults_and_fires_the_callback() -> None:
     assert canvas._filters_enabled is True
     assert canvas._filter_types_enabled is True
     assert canvas._filter_degrees_enabled is False  # the one exception -- see __init__
+    assert canvas._filter_index_edges_enabled is False  # the one exception -- see __init__
+    assert canvas._filter_index_edge_limit == 10
     assert seen[-1] == canvas._current_filter_state()
     # Post-24 fix #3: Reset syncs every stored control too, not just state.
     assert canvas._type_checkboxes["concept"].value is True
@@ -962,6 +1124,8 @@ def test_filters_reset_restores_defaults_and_fires_the_callback() -> None:
     assert canvas._master_switch.value is True
     assert canvas._types_switch.value is True
     assert canvas._degrees_switch.value is False
+    assert canvas._index_edges_switch.value is False
+    assert canvas._index_edges_slider.value == 10
 
 
 def test_set_filters_syncs_without_firing_the_callback() -> None:
@@ -983,6 +1147,8 @@ def test_set_filters_syncs_without_firing_the_callback() -> None:
         search_enabled=True,
         date_enabled=True,
         degrees_enabled=True,
+        index_edges_enabled=True,
+        index_edge_limit=7,
     )
     canvas.set_filters(state)
 
@@ -991,6 +1157,8 @@ def test_set_filters_syncs_without_firing_the_callback() -> None:
     assert canvas._filter_search == "alpha"
     assert canvas._filter_tags_enabled is False
     assert canvas._filter_degrees_enabled is True
+    assert canvas._filter_index_edges_enabled is True
+    assert canvas._filter_index_edge_limit == 7
     assert seen == []  # syncing from settings is not a user change
     # Post-24 fix #3: set_filters() syncs every stored control too.
     assert canvas._type_checkboxes["concept"].value is True
@@ -1001,6 +1169,8 @@ def test_set_filters_syncs_without_firing_the_callback() -> None:
     assert canvas._degrees_slider.value == 3
     assert canvas._tags_switch.value is False
     assert canvas._degrees_switch.value is True
+    assert canvas._index_edges_slider.value == 7
+    assert canvas._index_edges_switch.value is True
 
 
 def test_set_filters_is_a_no_op_for_an_unchanged_state() -> None:

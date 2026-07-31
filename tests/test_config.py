@@ -160,6 +160,29 @@ def test_graph_view_filters_default_to_all_types_and_nothing_else() -> None:
     assert settings.graph_view.filter_degrees == 1
 
 
+def test_graph_view_index_edges_filter_defaults_off() -> None:
+    """Phase 26: the same "starts opt-in" exception filter_degrees_enabled
+    already makes -- turning it on would immediately and silently change
+    what renders the next time index happens to get selected.
+    """
+    settings = AppSettings.load(None)
+    assert settings.graph_view.filter_index_edges_enabled is False
+    assert settings.graph_view.filter_index_edge_limit == 10
+
+
+def test_graph_view_index_edges_filter_round_trips_through_save(tmp_path: Path) -> None:
+    config_path = tmp_path / ".llm-wiki-config"
+    settings = AppSettings.load(None)
+    settings.graph_view.filter_index_edges_enabled = True
+    settings.graph_view.filter_index_edge_limit = 5
+
+    settings.save(config_path)
+    reloaded = AppSettings.load(config_path)
+
+    assert reloaded.graph_view.filter_index_edges_enabled is True
+    assert reloaded.graph_view.filter_index_edge_limit == 5
+
+
 def test_graph_view_filter_enable_switches_default_true_except_degrees() -> None:
     """Degrees is the one exception: it has no no-op state (it activates
     the instant any node is selected, a normal browsing action), so it
