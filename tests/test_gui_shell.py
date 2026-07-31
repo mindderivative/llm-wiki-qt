@@ -1359,6 +1359,23 @@ def test_category_swatches_are_sized_and_spaced_per_the_tuned_constants() -> Non
     assert graph_canvas._CATEGORY_SWATCH_ROW_SPACING > graph_canvas._TYPE_CHECKBOX_ROW_SPACING
 
 
+def test_settings_panel_scopes_a_slider_thumb_size_matching_the_swatches() -> None:
+    """Slider has no per-instance thumb-size property (unlike Switch/
+    Checkbox), so this goes through a nested `Container.theme` instead --
+    scoped to just the settings panel's own subtree, not the app-wide
+    theme, matching your explicit ask to reuse the swatch diameter.
+    """
+    canvas = GraphCanvas(_page_stub())
+
+    panel_theme = canvas._settings_panel.theme
+
+    assert panel_theme is not None
+    assert panel_theme.slider_theme is not None
+    thumb_size = panel_theme.slider_theme.thumb_size
+    assert thumb_size.width == graph_canvas._CATEGORY_SWATCH_DIAMETER
+    assert thumb_size.height == graph_canvas._CATEGORY_SWATCH_DIAMETER
+
+
 # --- Colors (Phase 25) -----------------------------------------------------
 
 

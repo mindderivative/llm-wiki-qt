@@ -1357,6 +1357,19 @@ class GraphCanvas(ft.Container):
             bgcolor=theme.CHROME_BG,
             border=ft.Border.all(1, theme.BORDER),
             border_radius=8,
+            # Post-26 fix -- Slider has no per-instance thumb-size property
+            # (unlike Switch/Checkbox, which needed the scale+fixed-box
+            # workaround), but its Material theme does: SliderTheme.
+            # thumb_size. A nested Container.theme scopes it to just this
+            # panel's subtree (every Slider here, without touching the
+            # app-wide theme in theme.py or affecting a Slider anywhere
+            # else) -- reuses _CATEGORY_SWATCH_DIAMETER directly, per your
+            # explicit ask to match the swatch circles' own size.
+            theme=ft.Theme(
+                slider_theme=ft.SliderTheme(
+                    thumb_size=ft.Size.square(_CATEGORY_SWATCH_DIAMETER)
+                )
+            ),
             content=ft.Column(spacing=8, controls=[header, self._panel_body]),
         )
 
