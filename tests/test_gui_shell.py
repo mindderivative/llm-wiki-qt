@@ -1359,22 +1359,39 @@ def test_category_swatches_are_sized_and_spaced_per_the_tuned_constants() -> Non
     assert graph_canvas._CATEGORY_SWATCH_ROW_SPACING > graph_canvas._TYPE_CHECKBOX_ROW_SPACING
 
 
-def test_build_theme_sets_a_page_wide_slider_thumb_size() -> None:
-    """Post-26 fix: a Slider has no per-instance thumb-size property, and
-    -- confirmed directly on the real build -- neither does a nested
-    `Container.theme`/`theme_mode` reliably reach it. A page-wide
-    `page.theme` is the one mechanism Flet's own docs example showed
-    genuinely working, and it's a safe app-wide setting here since this
-    app has no Slider anywhere except the graph canvas Settings panel.
+def test_compact_slider_scales_and_centers_within_its_unchanged_width() -> None:
+    """`SliderTheme.thumb_size` is a confirmed dead property in this Flet/
+    Flutter version (`thumbSize` only applies when `thumbShape` is
+    `HandleThumbShape`, which Flet's `SliderTheme` has no way to set) --
+    `scale` is the only remaining lever, same technique as `_compact_
+    switch()`/`_compact_checkbox()`. Unlike those two, the wrapper has no
+    fixed width: a bare Slider already claims full available width on its
+    own, confirmed across every earlier Container-wrapped Slider test.
     """
-    built = theme.build_theme()
+    canvas = GraphCanvas(_page_stub())
+    slider = ft.Slider(value=1, min=0, max=10)
 
-    assert built.slider_theme is not None
-    assert built.slider_theme.thumb_size.width == theme.SLIDER_THUMB_DIAMETER
-    assert built.slider_theme.thumb_size.height == theme.SLIDER_THUMB_DIAMETER
-    # The app's real color scheme is untouched -- page.theme is the
-    # actual live theme, not a "unique" reset that needs its own copy.
-    assert built.color_scheme.primary == theme.ACCENT
+    wrapped = canvas._compact_slider(slider)
+
+    assert slider.scale == pytest.approx(graph_canvas._COMPACT_SLIDER_SCALE)
+    assert isinstance(wrapped, ft.Container)
+    assert wrapped.content is slider  # the same instance, not a copy
+    assert wrapped.expand is True
+    assert wrapped.width is None  # unlike compact switch/checkbox -- no fixed box
+    assert wrapped.alignment == ft.Alignment.CENTER
+
+
+def test_every_settings_panel_slider_is_compact() -> None:
+    canvas = GraphCanvas(_page_stub())
+    sliders = [
+        canvas._degrees_slider,
+        canvas._index_edges_slider,
+        canvas._simulation_strength_slider,
+        canvas._min_zoom_slider,
+        canvas._max_zoom_slider,
+        canvas._node_spacing_slider,
+    ]
+    assert all(s.scale == pytest.approx(graph_canvas._COMPACT_SLIDER_SCALE) for s in sliders)
 
 
 # --- Colors (Phase 25) -----------------------------------------------------

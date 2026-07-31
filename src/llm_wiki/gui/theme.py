@@ -61,44 +61,23 @@ STAGE_LINK = "#35C177"  # oklch(72% 0.16 155)
 STAGE_LINT = "#DFA11A"  # oklch(75% 0.15 80)
 
 # Post-26 fix -- the graph canvas Settings panel's category swatches.
-# Lives here (not graph_canvas.py) since build_theme() below also used
-# to key the Slider thumb size off it. Material 3's own Switch spec
-# (24dp "on"-thumb diameter, scaled by graph_canvas._COMPACT_SWITCH_
-# SCALE) was the starting point; tuned from there against real user
-# feedback.
+# Material 3's own Switch spec (24dp "on"-thumb diameter, scaled by
+# graph_canvas._COMPACT_SWITCH_SCALE) was the starting point; tuned from
+# there against real user feedback.
 CATEGORY_SWATCH_DIAMETER = 14.0
-# Slider thumb size -- decoupled from the swatch diameter above once
-# `_CATEGORY_SWATCH_DIAMETER`'s own value only produced a slight, hard-
-# to-judge reduction; tuning independently now that the mechanism itself
-# (page.theme's slider_theme) is confirmed genuinely reaching the widget.
-SLIDER_THUMB_DIAMETER = 8.0
+
+# Post-26 fix -- `SliderTheme.thumb_size` was tried at length (nested
+# Container.theme, page.theme, both `year_2023` values, multiple
+# diameters) and confirmed via Flutter's own docs to be a structural
+# dead end in this Flet/Flutter version: `thumbSize` only has any effect
+# when `SliderThemeData.thumbShape` is `HandleThumbShape`, and Flet's
+# `SliderTheme` exposes no way to set `thumbShape` at all -- the default
+# thumb shape simply never reads it. `graph_canvas.py`'s
+# `_compact_slider()` (the same `scale` + fixed-box technique
+# `_compact_switch()`/`_compact_checkbox()` already use) is what actually
+# shrinks the slider now -- a control-level transform, independent of
+# this dead theme property.
 
 
 def build_theme() -> ft.Theme:
-    return ft.Theme(
-        color_scheme=ft.ColorScheme(primary=ACCENT, surface=APP_BG, error=ERROR),
-        # A Slider has no per-instance thumb-size property, only a Theme
-        # one -- confirmed (via direct testing, not Container.theme
-        # nesting, which turned out not to reliably apply at all in this
-        # app) that a page-wide Theme's own slider_theme is what actually
-        # reaches the widget. Safe as an app-wide setting: this app has
-        # no Slider anywhere except the graph canvas Settings panel.
-        # Confirmed live via a temporary thumb_color=GREEN diagnostic --
-        # the theme genuinely reaches the widget, so thumb_size is a real,
-        # working lever, not a coincidence. No thumb_color override here:
-        # it inherits color_scheme.primary above, matching every other
-        # accent-colored control in the app.
-        #
-        # No year_2023 override: its own docs were misread earlier as
-        # "True = classic simple circular thumb," which isn't what it
-        # does -- `False` (the default) is "the *latest* Material 3
-        # appearance, introduced December 2023," `True` is "*the 2023*
-        # Material 3 appearance" -- two different Material-3-era slider
-        # redesigns, neither a plain pre-M3 thumb. Every earlier test
-        # (nested Container and page.theme alike) had year_2023=True set
-        # the whole time, so thumb_size was never actually tested against
-        # the real default style until now.
-        slider_theme=ft.SliderTheme(
-            thumb_size=ft.Size.square(SLIDER_THUMB_DIAMETER),
-        ),
-    )
+    return ft.Theme(color_scheme=ft.ColorScheme(primary=ACCENT, surface=APP_BG, error=ERROR))

@@ -63,8 +63,7 @@ _COMPACT_SWITCH_HEIGHT = 20.0
 # build -- shrunk further from there, tuned directly against your visual
 # feedback rather than re-derived from the spec. 12.0 then read slightly
 # too small; 14.0 confirmed the right size, with the row spacing left
-# unchanged. Lives in theme.py (as CATEGORY_SWATCH_DIAMETER), not here --
-# also reused by build_theme()'s page-wide Slider thumb-size override.
+# unchanged. Lives in theme.py (as CATEGORY_SWATCH_DIAMETER), not here.
 # Type checkboxes shrink to a square matching the switch's own height
 # (its full track, "including its borders") -- Checkbox's default
 # Material footprint, like Switch's, is bigger than its visible box, so
@@ -72,6 +71,12 @@ _COMPACT_SWITCH_HEIGHT = 20.0
 # Confirmed correct on the real build on the first try -- unchanged since.
 _COMPACT_CHECKBOX_SIZE = _COMPACT_SWITCH_HEIGHT
 _COMPACT_CHECKBOX_SCALE = 0.75
+# Slider's theme-level thumb_size is a confirmed dead property in this
+# Flet/Flutter version (see theme.py's own comment) -- `scale` is the
+# only remaining lever, same technique as the two constants above. Unlike
+# Switch/Checkbox, this scales the whole control -- track and thumb
+# together, since Slider has no independent thumb-only sizing hook.
+_COMPACT_SLIDER_SCALE = 0.7
 _TYPE_CHECKBOX_ROW_SPACING = 1.5
 # Categories' own row spacing -- the original "3/4 of Type's spacing"
 # formula (1.125) read as *too tight* once the swatches themselves also
@@ -1624,7 +1629,7 @@ class GraphCanvas(ft.Container):
             on_change_end=self._persist_filter_change,
         )
         return ft.Column(
-            spacing=2, controls=[self._degrees_caption, self._degrees_slider]
+            spacing=2, controls=[self._degrees_caption, self._compact_slider(self._degrees_slider)]
         )
 
     def _index_edges_caption_text(self) -> str:
@@ -1650,7 +1655,7 @@ class GraphCanvas(ft.Container):
         )
         return ft.Column(
             spacing=2,
-            controls=[self._index_edges_caption, self._index_edges_slider],
+            controls=[self._index_edges_caption, self._compact_slider(self._index_edges_slider)],
         )
 
     def _compact_switch(self, switch: ft.Switch) -> ft.Control:
@@ -1685,6 +1690,24 @@ class GraphCanvas(ft.Container):
             alignment=ft.Alignment.CENTER,
             content=checkbox,
         )
+
+    def _compact_slider(self, slider: ft.Slider) -> ft.Control:
+        """`SliderTheme.thumb_size` is a confirmed dead property in this
+        Flet/Flutter version (see theme.py's own comment) -- `scale`
+        (paint-only, same technique as `_compact_switch()`/`_compact_
+        checkbox()`) is the only remaining lever. Unlike those two, this
+        scales the *whole* control -- track and thumb together, since
+        Slider has no way to shrink just the thumb. The wrapping
+        Container's own width is left unconfigured (not fixed like the
+        switch/checkbox boxes): a bare Slider already claims the full
+        available width on its own, confirmed empirically across every
+        earlier Container-wrapped Slider test in this file -- none of
+        them ever narrowed the track -- so this only needs to center the
+        now-visually-smaller control within that unchanged reserved
+        space, not resize the box itself.
+        """
+        slider.scale = _COMPACT_SLIDER_SCALE
+        return ft.Container(expand=True, alignment=ft.Alignment.CENTER, content=slider)
 
     def _build_filter_section_box(
         self, title: str, switch: ft.Switch, content: ft.Control
@@ -1898,7 +1921,7 @@ class GraphCanvas(ft.Container):
                     ],
                 ),
                 self._simulation_strength_caption,
-                self._simulation_strength_slider,
+                self._compact_slider(self._simulation_strength_slider),
             ],
         )
 
@@ -1943,9 +1966,9 @@ class GraphCanvas(ft.Container):
             spacing=6,
             controls=[
                 self._min_zoom_caption,
-                self._min_zoom_slider,
+                self._compact_slider(self._min_zoom_slider),
                 self._max_zoom_caption,
-                self._max_zoom_slider,
+                self._compact_slider(self._max_zoom_slider),
                 ft.Row(
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     controls=[
@@ -1975,7 +1998,10 @@ class GraphCanvas(ft.Container):
         )
         return ft.Column(
             spacing=2,
-            controls=[self._node_spacing_caption, self._node_spacing_slider],
+            controls=[
+                self._node_spacing_caption,
+                self._compact_slider(self._node_spacing_slider),
+            ],
         )
 
     def _build_display_settings_section(self) -> ft.Control:
