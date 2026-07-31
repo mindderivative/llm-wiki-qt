@@ -1374,6 +1374,10 @@ def test_settings_panel_scopes_a_slider_thumb_size_matching_the_swatches() -> No
     thumb_size = panel_theme.slider_theme.thumb_size
     assert thumb_size.width == graph_canvas._CATEGORY_SWATCH_DIAMETER
     assert thumb_size.height == graph_canvas._CATEGORY_SWATCH_DIAMETER
+    # year_2023=True reverts to the classic circular thumb -- the M3
+    # redesign's default "handle" shape (a pill/bar, not a circle)
+    # doesn't shrink down cleanly via thumb_size alone.
+    assert panel_theme.slider_theme.year_2023 is True
 
 
 # --- Colors (Phase 25) -----------------------------------------------------

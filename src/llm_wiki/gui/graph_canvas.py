@@ -1365,9 +1365,19 @@ class GraphCanvas(ft.Container):
             # app-wide theme in theme.py or affecting a Slider anywhere
             # else) -- reuses _CATEGORY_SWATCH_DIAMETER directly, per your
             # explicit ask to match the swatch circles' own size.
+            #
+            # `thumb_size` alone still read oversized: Material 3's
+            # redesigned slider (Flet's `year_2023` default) uses a
+            # pill/bar-shaped "handle" thumb, not a circle -- thumb_size
+            # doesn't shrink that shape down to something round the way
+            # it does the classic thumb. `year_2023=True` reverts to the
+            # pre-M3-redesign style (a plain filled circle, the same
+            # shape Switch/Checkbox already use), where thumb_size is the
+            # well-documented radius/diameter it was expected to be.
             theme=ft.Theme(
                 slider_theme=ft.SliderTheme(
-                    thumb_size=ft.Size.square(_CATEGORY_SWATCH_DIAMETER)
+                    thumb_size=ft.Size.square(_CATEGORY_SWATCH_DIAMETER),
+                    year_2023=True,
                 )
             ),
             content=ft.Column(spacing=8, controls=[header, self._panel_body]),
