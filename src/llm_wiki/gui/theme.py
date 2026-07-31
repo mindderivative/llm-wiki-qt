@@ -78,15 +78,13 @@ def build_theme() -> ft.Theme:
         # app) that a page-wide Theme's own slider_theme is what actually
         # reaches the widget. Safe as an app-wide setting: this app has
         # no Slider anywhere except the graph canvas Settings panel.
+        # Confirmed live via a temporary thumb_color=GREEN diagnostic --
+        # the theme genuinely reaches the widget, so thumb_size is a real,
+        # working lever, not a coincidence. No thumb_color override here:
+        # it inherits color_scheme.primary above, matching every other
+        # accent-colored control in the app.
         slider_theme=ft.SliderTheme(
             thumb_size=ft.Size.square(CATEGORY_SWATCH_DIAMETER),
             year_2023=True,
-            # TEMPORARY diagnostic (not a design change) -- an
-            # unmistakable color makes it obvious at a glance whether
-            # page.theme's slider_theme is reaching the widget at all,
-            # independent of the size question (which is subtle enough
-            # to be hard to eyeball). Revert to theme.py's real accent
-            # once confirmed either way.
-            thumb_color=ft.Colors.GREEN,
         ),
     )
