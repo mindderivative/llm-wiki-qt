@@ -1361,11 +1361,17 @@ def test_category_swatches_are_sized_and_spaced_per_the_tuned_constants() -> Non
 
 def test_themed_slider_wraps_directly_in_a_container_with_the_expected_theme() -> None:
     """Slider has no per-instance thumb-size property (unlike Switch/
-    Checkbox); wrapping it directly in its own themed Container -- no
-    control in between -- is what actually applied on the real build. A
-    Theme set several layers up the panel's own tree instead (the outer
-    settings-panel Container) did not visibly apply, confirmed on a real
-    device, not assumed.
+    Checkbox); wrapping it directly in its own themed Container is
+    necessary but not sufficient on its own -- confirmed against Flet's
+    own docs example ("Inherited theme with primary color overridden")
+    that a bare `theme=` genuinely does not take effect regardless of
+    nesting depth. The example's working case pairs `theme=` with an
+    explicit `theme_mode=`, which `Container.theme_mode`'s own docstring
+    explains: it "resets" the parent theme, actually activating a nested
+    override. `ThemeMode.DARK` matches this app's own permanent
+    `page.theme_mode`, so nothing about the app's real appearance
+    changes -- it only switches on the mechanism that makes the override
+    apply at all.
     """
     canvas = GraphCanvas(_page_stub())
     slider = ft.Slider(value=1, min=0, max=10)
@@ -1375,6 +1381,7 @@ def test_themed_slider_wraps_directly_in_a_container_with_the_expected_theme() -
     assert isinstance(wrapped, ft.Container)
     assert wrapped.content is slider  # the same instance, not a copy
     assert wrapped.expand is True  # preserves the slider's full-width behavior
+    assert wrapped.theme_mode == ft.ThemeMode.DARK  # required to activate theme= at all
     slider_theme = wrapped.theme.slider_theme
     assert slider_theme.thumb_size.width == graph_canvas._CATEGORY_SWATCH_DIAMETER
     assert slider_theme.thumb_size.height == graph_canvas._CATEGORY_SWATCH_DIAMETER
@@ -1426,6 +1433,7 @@ def test_every_settings_panel_slider_is_individually_themed() -> None:
         assert wrapper is not None, f"{slider} is not wrapped in a themed Container"
         assert wrapper.theme is not None
         assert wrapper.theme.slider_theme.year_2023 is True
+        assert wrapper.theme_mode == ft.ThemeMode.DARK  # required to activate theme= at all
 
 
 # --- Colors (Phase 25) -----------------------------------------------------

@@ -1688,19 +1688,27 @@ class GraphCanvas(ft.Container):
 
     def _themed_slider(self, slider: ft.Slider) -> ft.Control:
         """Wraps `slider` directly in its own themed Container -- no
-        control in between the Theme and the Slider itself. Confirmed
-        empirically (not assumed) that the same Theme, set several layers
-        up this panel's own tree instead (the outer settings-panel
-        Container -> Column -> a section-box Container -> Column ->
-        Slider), did not visibly apply on the real build even with every
-        relevant field explicit (`thumb_size`, `year_2023`,
-        `use_material3`) -- wrapping each Slider immediately removes that
-        ambiguity. `expand=True` on the wrapper preserves the Slider's
-        existing full-width behavior, which an unconfigured Container
-        would not.
+        control in between the Theme and the Slider itself.
+
+        `theme=` alone -- even set directly on the Slider's own immediate
+        parent -- turned out not to be the actual fix: confirmed against
+        Flet's own docs example ("Inherited theme with primary color
+        overridden") that a bare `Container.theme=` genuinely does not
+        take effect, full stop, regardless of nesting depth. The
+        example's *working* case ("Unique theme") pairs `theme=` with an
+        explicit `theme_mode=` -- `Container.theme_mode`'s own docstring
+        explains why: it "resets" the parent theme and creates a new,
+        unique scheme for everything inside, which is what actually
+        activates a nested `theme=` override at all. `ThemeMode.DARK`
+        here matches this app's own permanent `page.theme_mode` (set in
+        `app.py`), so nothing about the app's actual appearance changes
+        -- this only exists to switch on the "unique theme" codepath.
+        `expand=True` preserves the Slider's existing full-width
+        behavior, which an unconfigured Container would not.
         """
         return ft.Container(
             expand=True,
+            theme_mode=ft.ThemeMode.DARK,
             theme=ft.Theme(
                 use_material3=True,
                 slider_theme=ft.SliderTheme(
