@@ -1562,6 +1562,7 @@ class GraphCanvas(ft.Container):
             value=self._filter_degrees,
             label="{value}",
             on_change=lambda e: self._on_filter_degrees_changed(int(e.control.value)),
+            on_change_end=self._persist_filter_change,
         )
         return ft.Column(spacing=2, controls=[self._degrees_caption, self._degrees_slider])
 
@@ -1584,6 +1585,7 @@ class GraphCanvas(ft.Container):
             value=self._filter_index_edge_limit,
             label="{value}",
             on_change=lambda e: self._on_filter_index_edge_limit_changed(int(e.control.value)),
+            on_change_end=self._persist_filter_change,
         )
         return ft.Column(
             spacing=2, controls=[self._index_edges_caption, self._index_edges_slider]
@@ -1788,6 +1790,7 @@ class GraphCanvas(ft.Container):
             on_change=(
                 lambda e: self._on_simulation_strength_changed(round(e.control.value, 2))
             ),
+            on_change_end=self._persist_display_settings_change,
         )
         return ft.Column(
             spacing=6,
@@ -1822,6 +1825,7 @@ class GraphCanvas(ft.Container):
             value=self._min_zoom,
             label="{value}",
             on_change=lambda e: self._on_min_zoom_changed(round(e.control.value, 2)),
+            on_change_end=self._persist_display_settings_change,
         )
         min_range, max_range = _MAX_ZOOM_SLIDER_RANGE
         self._max_zoom_caption = ft.Text(
@@ -1834,6 +1838,7 @@ class GraphCanvas(ft.Container):
             value=self._max_zoom,
             label="{value}",
             on_change=lambda e: self._on_max_zoom_changed(round(e.control.value, 2)),
+            on_change_end=self._persist_display_settings_change,
         )
         self._invert_scroll_switch = ft.Switch(
             value=self._invert_scroll_zoom,
@@ -1900,11 +1905,20 @@ class GraphCanvas(ft.Container):
             node_spacing=self._node_spacing,
         )
 
-    def _apply_display_settings_change(self) -> None:
+    def _apply_display_settings_change(self, *, persist: bool = True) -> None:
         """Common tail for every Colors/Physics/Zoom-Pan control's own
-        handler -- mirrors `_apply_filter_change()` exactly.
+        handler -- mirrors `_apply_filter_change()` exactly, including its
+        Post-26 fix `persist` param for continuous sliders (Strength, Min/
+        Max Zoom): `persist=False` redraws live without writing to disk on
+        every `on_change` tick; `_persist_display_settings_change()`
+        (wired to each slider's `on_change_end`) fires the deferred
+        persistence once, when the drag ends.
         """
         self._redraw_all()
+        if persist and self.on_display_settings_changed is not None:
+            self.on_display_settings_changed(self._current_display_settings())
+
+    def _persist_display_settings_change(self, e=None) -> None:
         if self.on_display_settings_changed is not None:
             self.on_display_settings_changed(self._current_display_settings())
 
@@ -1917,7 +1931,7 @@ class GraphCanvas(ft.Container):
         self._simulation_strength_caption.value = self._simulation_strength_caption_text()
         with contextlib.suppress(RuntimeError):
             self._simulation_strength_caption.update()
-        self._apply_display_settings_change()
+        self._apply_display_settings_change(persist=False)  # on_change_end persists
 
     def _on_invert_scroll_toggled(self, enabled: bool) -> None:
         self._invert_scroll_zoom = enabled
@@ -1945,7 +1959,7 @@ class GraphCanvas(ft.Container):
         self._min_zoom_caption.value = self._min_zoom_caption_text()
         with contextlib.suppress(RuntimeError):
             self._min_zoom_caption.update()
-        self._apply_display_settings_change()
+        self._apply_display_settings_change(persist=False)  # on_change_end persists
 
     def _on_max_zoom_changed(self, value: float) -> None:
         self._max_zoom = value
@@ -1960,7 +1974,7 @@ class GraphCanvas(ft.Container):
         self._max_zoom_caption.value = self._max_zoom_caption_text()
         with contextlib.suppress(RuntimeError):
             self._max_zoom_caption.update()
-        self._apply_display_settings_change()
+        self._apply_display_settings_change(persist=False)  # on_change_end persists
 
     def _on_node_spacing_changed(self, value: float) -> None:
         """Live caption only -- no relayout yet. Relaying out on every
@@ -2100,7 +2114,7 @@ class GraphCanvas(ft.Container):
             index_edge_limit=self._filter_index_edge_limit,
         )
 
-    def _apply_filter_change(self) -> None:
+    def _apply_filter_change(self, *, persist: bool = True) -> None:
         """Common tail for every filter control's own handler: clears
         selection if it's no longer visible under the new filters, redraws
         the graph, and -- only here, not from `set_filters()` -- fires
@@ -2112,12 +2126,29 @@ class GraphCanvas(ft.Container):
         mutation at all (native Flet controls like Checkbox/Slider/Switch/
         TextField already reflect their own edited state client-side) --
         so there is nothing left for this shared tail to rebuild.
+
+        Post-26 fix: `persist=False` lets a continuous slider's own
+        `on_change` redraw live without persisting on every tick --
+        `on_change` fires many times per second while dragging, and each
+        call was writing `.llm-wiki-config` to disk *and* appending a
+        Pipeline Log entry, which measurably stuttered the graph during
+        the drag and, after enough dragging, left the log panel holding
+        hundreds of entries that kept things sluggish until restart. The
+        slider's own `on_change_end` (see `_persist_filter_change()`)
+        fires the deferred persistence exactly once, when the drag ends.
         """
         if self._selected is not None and not self._passes_filters(self._selected):
             self._selected = None
             self._update_info_overlay()
             self._degrees_from_selected = {}
         self._redraw_all()
+        if persist and self.on_filters_changed is not None:
+            self.on_filters_changed(self._current_filter_state())
+
+    def _persist_filter_change(self, e=None) -> None:
+        """`on_change_end` for the two continuous Filters sliders (Degrees,
+        Index Edge Limit) -- see `_apply_filter_change()`'s `persist` param.
+        """
         if self.on_filters_changed is not None:
             self.on_filters_changed(self._current_filter_state())
 
@@ -2174,7 +2205,7 @@ class GraphCanvas(ft.Container):
         self._degrees_caption.value = self._degrees_caption_text()
         with contextlib.suppress(RuntimeError):
             self._degrees_caption.update()
-        self._apply_filter_change()
+        self._apply_filter_change(persist=False)  # on_change_end persists
 
     def _on_filter_master_toggled(self, enabled: bool) -> None:
         self._filters_enabled = enabled
@@ -2205,7 +2236,7 @@ class GraphCanvas(ft.Container):
         self._index_edges_caption.value = self._index_edges_caption_text()
         with contextlib.suppress(RuntimeError):
             self._index_edges_caption.update()
-        self._apply_filter_change()
+        self._apply_filter_change(persist=False)  # on_change_end persists
 
     def _on_filter_index_edges_enabled_toggled(self, enabled: bool) -> None:
         self._filter_index_edges_enabled = enabled

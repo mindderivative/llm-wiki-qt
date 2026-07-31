@@ -826,6 +826,23 @@ def test_degrees_slider_change_does_not_rebuild_the_settings_panel() -> None:
     assert canvas._degrees_caption.value == "Within 3 hop(s) of the selection"
 
 
+def test_degrees_slider_on_change_does_not_persist_until_change_end() -> None:
+    """Post-26 fix: `on_change` fires continuously while dragging -- each
+    call must redraw live without persisting, or dragging a slider floods
+    `.llm-wiki-config` (and the Pipeline Log, since every save logs) with
+    hundreds of writes per drag, which measurably stuttered the graph.
+    """
+    seen: list[GraphFilterState] = []
+    canvas = GraphCanvas(_page_stub(), on_filters_changed=seen.append)
+    canvas._graph = _filters_fixture_graph()
+
+    canvas._on_filter_degrees_changed(3)
+    assert seen == []  # on_change alone must not persist
+
+    canvas._persist_filter_change()  # the slider's on_change_end
+    assert seen[-1].degrees == 3
+
+
 def test_type_checkbox_change_does_not_rebuild_the_settings_panel() -> None:
     canvas = _filters_canvas()
     panel_content_before = canvas._settings_panel.content
@@ -1049,6 +1066,18 @@ def test_index_edge_limit_slider_change_does_not_rebuild_the_settings_panel() ->
 
     assert canvas._settings_panel.content is panel_content_before
     assert canvas._filter_index_edge_limit == 5
+
+
+def test_index_edge_limit_slider_on_change_does_not_persist_until_change_end() -> None:
+    seen: list[GraphFilterState] = []
+    canvas = GraphCanvas(_page_stub(), on_filters_changed=seen.append)
+    canvas._graph = _filters_fixture_graph()
+
+    canvas._on_filter_index_edge_limit_changed(7)
+    assert seen == []  # on_change alone must not persist
+
+    canvas._persist_filter_change()  # the slider's on_change_end
+    assert seen[-1].index_edge_limit == 7
 
 
 def test_index_edges_caption_text_in_each_state() -> None:
@@ -1302,6 +1331,21 @@ def test_simulation_strength_scales_the_tick_forces() -> None:
     assert strong_displacement > default_displacement
 
 
+def test_simulation_strength_slider_on_change_does_not_persist_until_change_end() -> None:
+    """Post-26 fix: same on_change/on_change_end persistence split as the
+    Filters sliders -- dragging Strength shouldn't write to disk (and log)
+    on every tick either.
+    """
+    seen: list[GraphDisplaySettings] = []
+    canvas = GraphCanvas(_page_stub(), on_display_settings_changed=seen.append)
+
+    canvas._on_simulation_strength_changed(1.75)
+    assert seen == []
+
+    canvas._persist_display_settings_change()  # the slider's on_change_end
+    assert seen[-1].simulation_strength == 1.75
+
+
 def test_invert_scroll_zoom_flips_the_wheel_direction() -> None:
     canvas = GraphCanvas(_page_stub())
     canvas._invert_scroll_zoom = True
@@ -1361,6 +1405,19 @@ def test_min_max_zoom_changes_do_not_rebuild_the_settings_panel() -> None:
     canvas._on_max_zoom_changed(3.0)
 
     assert canvas._settings_panel.content is panel_content_before
+
+
+def test_min_max_zoom_sliders_on_change_do_not_persist_until_change_end() -> None:
+    seen: list[GraphDisplaySettings] = []
+    canvas = GraphCanvas(_page_stub(), on_display_settings_changed=seen.append)
+
+    canvas._on_min_zoom_changed(0.3)
+    canvas._on_max_zoom_changed(3.0)
+    assert seen == []  # on_change alone must not persist
+
+    canvas._persist_display_settings_change()  # either slider's on_change_end
+    assert seen[-1].min_zoom == 0.3
+    assert seen[-1].max_zoom == 3.0
 
 
 def test_node_spacing_affects_computed_layout_distances() -> None:
