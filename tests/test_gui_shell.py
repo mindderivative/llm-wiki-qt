@@ -1340,11 +1340,12 @@ def test_every_type_checkbox_is_compact() -> None:
     )
 
 
-def test_category_swatches_match_the_switch_thumbs_diameter_and_tightened_spacing() -> None:
-    """Locks in the swatch diameter (matching Material 3's 24dp "on"-thumb
-    at the same 0.65 scale the compact switch already uses) and the two
-    explicit spacing ratios: Type's checkbox rows tighten to 3/4 of their
-    prior spacing, and Categories' swatch rows tighten to 3/4 of *that*.
+def test_category_swatches_are_sized_and_spaced_per_the_tuned_constants() -> None:
+    """Locks in the swatch dimensions and both dimensions' row spacing
+    against their module constants -- tuned directly from your visual
+    feedback (see graph_canvas.py's own comments), not derived from a
+    formula relating the two, after the original "3/4 of Type's spacing"
+    ratio read as too tight once the swatches themselves also shrank.
     """
     canvas = GraphCanvas(_page_stub())
 
@@ -1353,10 +1354,9 @@ def test_category_swatches_match_the_switch_thumbs_diameter_and_tightened_spacin
         assert swatch.height == graph_canvas._CATEGORY_SWATCH_DIAMETER
         assert swatch.border_radius == graph_canvas._CATEGORY_SWATCH_DIAMETER / 2
 
-    assert pytest.approx(2.0 * 0.75) == graph_canvas._TYPE_CHECKBOX_ROW_SPACING
-    assert pytest.approx(
-        graph_canvas._TYPE_CHECKBOX_ROW_SPACING * 0.75
-    ) == graph_canvas._CATEGORY_SWATCH_ROW_SPACING
+    # Categories' rows are spaced wider than Type's despite the smaller
+    # swatches -- small circles need comparatively more breathing room.
+    assert graph_canvas._CATEGORY_SWATCH_ROW_SPACING > graph_canvas._TYPE_CHECKBOX_ROW_SPACING
 
 
 # --- Colors (Phase 25) -----------------------------------------------------

@@ -58,21 +58,26 @@ _COMPACT_SWITCH_HEIGHT = 20.0
 # compact switch above. Material 3's own Switch spec (track 52x32dp,
 # "on"-state thumb 24dp diameter -- documented, stable values, not
 # guessed) confirms _COMPACT_SWITCH_WIDTH/HEIGHT were derived correctly
-# in the first place (52 * 0.65 ≈ 33.8, 32 * 0.65 ≈ 20.8). The category
-# color swatches are sized to match that same spec's "on"-thumb diameter
-# at the same scale (24 * 0.65 ≈ 15.6, rounded).
-_CATEGORY_SWATCH_DIAMETER = 16.0
+# in the first place (52 * 0.65 ≈ 33.8, 32 * 0.65 ≈ 20.8). The spec-
+# derived swatch diameter (24 * 0.65 ≈ 15.6) read too large on the real
+# build -- shrunk further from there, tuned directly against your visual
+# feedback rather than re-derived from the spec.
+_CATEGORY_SWATCH_DIAMETER = 12.0
 # Type checkboxes shrink to a square matching the switch's own height
 # (its full track, "including its borders") -- Checkbox's default
 # Material footprint, like Switch's, is bigger than its visible box, so
 # it needs the same scale + fixed-box technique as _compact_switch().
+# Confirmed correct on the real build on the first try -- unchanged since.
 _COMPACT_CHECKBOX_SIZE = _COMPACT_SWITCH_HEIGHT
 _COMPACT_CHECKBOX_SCALE = 0.75
-# Row spacing tightened per explicit ratios: Type's checkbox rows first
-# shrink to 3/4 of their prior spacing (2.0 -> 1.5), then Categories'
-# swatch rows are set to 3/4 of *that* new, tighter Type spacing.
 _TYPE_CHECKBOX_ROW_SPACING = 1.5
-_CATEGORY_SWATCH_ROW_SPACING = 1.125
+# Categories' own row spacing -- the original "3/4 of Type's spacing"
+# formula (1.125) read as *too tight* once the swatches themselves also
+# shrank, not proportionally tight -- decoupled from that ratio and set
+# independently, wider than Type's own spacing despite the swatches being
+# smaller, since small circles need comparatively more breathing room to
+# not look bunched.
+_CATEGORY_SWATCH_ROW_SPACING = 6.0
 # Nominal layout space; the canvas scales to its real size on first resize.
 _BASE_WIDTH = 900.0
 _BASE_HEIGHT = 560.0
