@@ -901,12 +901,27 @@ class GraphCanvas(ft.Container):
         selected leaf note could reach `index` and its own source and
         essentially nothing else -- useless for "how topologically close is
         this" exploration, which is what this filter is actually for.
+
+        The gravity well is excluded from the traversal graph when the
+        selection is anything *other than* `index` itself. Every note is
+        guaranteed a direct edge to `index` (same Phase 18 guarantee) --
+        leaving it in makes `index` a length-2 shortcut between any two
+        notes at all (`note-A -> index -> note-B`), so degree=2 would
+        always show the entire vault regardless of real topical distance.
+        Removing it forces hop-distance to reflect genuine content links
+        (source/entity edges, any LLM-added cross-references) instead.
+        Selecting `index` itself keeps the unmodified graph -- there, every
+        note genuinely *is* one hop away, which is the correct answer for
+        "how far is this from the hub," not a shortcut artifact to correct.
         """
         if self._selected is None or self._selected not in self._graph:
             self._degrees_from_selected = {}
             return
+        graph = self._graph.to_undirected()
+        if self._selected != _GRAVITY_WELL_SLUG and _GRAVITY_WELL_SLUG in graph:
+            graph.remove_node(_GRAVITY_WELL_SLUG)
         self._degrees_from_selected = nx.single_source_shortest_path_length(
-            self._graph.to_undirected(), self._selected
+            graph, self._selected
         )
 
     def _passes_filters(self, slug: str) -> bool:

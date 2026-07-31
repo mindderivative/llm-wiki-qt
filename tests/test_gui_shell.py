@@ -729,12 +729,42 @@ def test_degrees_filter_only_applies_with_a_selection() -> None:
 
     canvas._selected = "note-a"
     canvas._update_degrees_from_selected()
-    # note-a (itself), note-b (direct edge), index (direct edge) are within
-    # 1 hop; note-c is 2 hops away (note-a -> index -> note-c).
+    # note-a (itself) and note-b (direct edge) are within 1 hop; note-c
+    # has no edge to note-a other than via index, which is excluded from
+    # the traversal (see test_degrees_filter_does_not_route_through_index_
+    # as_a_shortcut below) -- unreachable, not "2 hops away."
     assert canvas._passes_filters("note-a") is True
     assert canvas._passes_filters("note-b") is True
     assert canvas._passes_filters("index") is True  # exempt anyway
     assert canvas._passes_filters("note-c") is False
+
+
+def test_degrees_filter_does_not_route_through_index_as_a_shortcut() -> None:
+    """Regression: every note has a guaranteed direct edge to `index`
+    (Phase 18's Related-block), so leaving it in the traversal graph would
+    make `index` a length-2 shortcut between *any* two notes -- degree=2
+    would always show the entire vault regardless of real topical
+    distance. Excluding `index` forces hop-distance to reflect genuine
+    content links instead.
+    """
+    canvas = _filters_canvas()
+    canvas._filter_degrees_enabled = True
+    canvas._selected = "note-a"
+    canvas._update_degrees_from_selected()
+
+    # note-c's only path to note-a is via index (note-a -> index ->
+    # note-c) -- excluded from the traversal, so it's unreachable even at
+    # a generous degree=2, not "2 hops away."
+    canvas._filter_degrees = 2
+    assert canvas._passes_filters("note-c") is False
+
+    # Selecting index itself is unaffected -- there, every note genuinely
+    # *is* one hop away, the correct answer for "how far from the hub,"
+    # not a shortcut artifact to correct.
+    canvas._selected = "index"
+    canvas._update_degrees_from_selected()
+    canvas._filter_degrees = 1
+    assert canvas._passes_filters("note-c") is True
 
 
 def test_degrees_filter_is_off_by_default_even_once_a_node_is_selected() -> None:
