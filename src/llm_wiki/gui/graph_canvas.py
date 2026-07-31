@@ -61,8 +61,10 @@ _COMPACT_SWITCH_HEIGHT = 20.0
 # in the first place (52 * 0.65 ≈ 33.8, 32 * 0.65 ≈ 20.8). The spec-
 # derived swatch diameter (24 * 0.65 ≈ 15.6) read too large on the real
 # build -- shrunk further from there, tuned directly against your visual
-# feedback rather than re-derived from the spec.
-_CATEGORY_SWATCH_DIAMETER = 12.0
+# feedback rather than re-derived from the spec. 12.0 then read slightly
+# too small; 14.0 confirmed the right size, with the row spacing left
+# unchanged.
+_CATEGORY_SWATCH_DIAMETER = 14.0
 # Type checkboxes shrink to a square matching the switch's own height
 # (its full track, "including its borders") -- Checkbox's default
 # Material footprint, like Switch's, is bigger than its visible box, so
