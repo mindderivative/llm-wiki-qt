@@ -81,5 +81,12 @@ def build_theme() -> ft.Theme:
         slider_theme=ft.SliderTheme(
             thumb_size=ft.Size.square(CATEGORY_SWATCH_DIAMETER),
             year_2023=True,
+            # TEMPORARY diagnostic (not a design change) -- an
+            # unmistakable color makes it obvious at a glance whether
+            # page.theme's slider_theme is reaching the widget at all,
+            # independent of the size question (which is subtle enough
+            # to be hard to eyeball). Revert to theme.py's real accent
+            # once confirmed either way.
+            thumb_color=ft.Colors.GREEN,
         ),
     )
