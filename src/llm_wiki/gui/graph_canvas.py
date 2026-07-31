@@ -1357,40 +1357,6 @@ class GraphCanvas(ft.Container):
             bgcolor=theme.CHROME_BG,
             border=ft.Border.all(1, theme.BORDER),
             border_radius=8,
-            # Post-26 fix -- Slider has no per-instance thumb-size property
-            # (unlike Switch/Checkbox, which needed the scale+fixed-box
-            # workaround), but its Material theme does: SliderTheme.
-            # thumb_size. A nested Container.theme scopes it to just this
-            # panel's subtree (every Slider here, without touching the
-            # app-wide theme in theme.py or affecting a Slider anywhere
-            # else) -- reuses _CATEGORY_SWATCH_DIAMETER directly, per your
-            # explicit ask to match the swatch circles' own size.
-            #
-            # `thumb_size` alone still read oversized: Material 3's
-            # redesigned slider (Flet's `year_2023` default) uses a
-            # pill/bar-shaped "handle" thumb, not a circle -- thumb_size
-            # doesn't shrink that shape down to something round the way
-            # it does the classic thumb. `year_2023=True` reverts to the
-            # pre-M3-redesign style (a plain filled circle, the same
-            # shape Switch/Checkbox already use), where thumb_size is the
-            # well-documented radius/diameter it was expected to be.
-            #
-            # `Slider.year_2023`'s own docs carry one more condition:
-            # "If flet.Theme.use_material3 is False, then this property is
-            # ignored." This nested Theme never set use_material3 at all,
-            # leaving it at the dataclass's own unset default rather than
-            # genuinely inheriting theme.py's app-wide Theme (which also
-            # never sets it, relying on Flutter's own true default) --
-            # explicit here so year_2023 is never at risk of being
-            # silently ignored regardless of how a nested Container.theme
-            # merges with its ancestor.
-            theme=ft.Theme(
-                use_material3=True,
-                slider_theme=ft.SliderTheme(
-                    thumb_size=ft.Size.square(_CATEGORY_SWATCH_DIAMETER),
-                    year_2023=True,
-                ),
-            ),
             content=ft.Column(spacing=8, controls=[header, self._panel_body]),
         )
 
@@ -1657,7 +1623,9 @@ class GraphCanvas(ft.Container):
             on_change=lambda e: self._on_filter_degrees_changed(int(e.control.value)),
             on_change_end=self._persist_filter_change,
         )
-        return ft.Column(spacing=2, controls=[self._degrees_caption, self._degrees_slider])
+        return ft.Column(
+            spacing=2, controls=[self._degrees_caption, self._themed_slider(self._degrees_slider)]
+        )
 
     def _index_edges_caption_text(self) -> str:
         if self._selected != _GRAVITY_WELL_SLUG:
@@ -1681,7 +1649,8 @@ class GraphCanvas(ft.Container):
             on_change_end=self._persist_filter_change,
         )
         return ft.Column(
-            spacing=2, controls=[self._index_edges_caption, self._index_edges_slider]
+            spacing=2,
+            controls=[self._index_edges_caption, self._themed_slider(self._index_edges_slider)],
         )
 
     def _compact_switch(self, switch: ft.Switch) -> ft.Control:
@@ -1715,6 +1684,31 @@ class GraphCanvas(ft.Container):
             height=_COMPACT_CHECKBOX_SIZE,
             alignment=ft.Alignment.CENTER,
             content=checkbox,
+        )
+
+    def _themed_slider(self, slider: ft.Slider) -> ft.Control:
+        """Wraps `slider` directly in its own themed Container -- no
+        control in between the Theme and the Slider itself. Confirmed
+        empirically (not assumed) that the same Theme, set several layers
+        up this panel's own tree instead (the outer settings-panel
+        Container -> Column -> a section-box Container -> Column ->
+        Slider), did not visibly apply on the real build even with every
+        relevant field explicit (`thumb_size`, `year_2023`,
+        `use_material3`) -- wrapping each Slider immediately removes that
+        ambiguity. `expand=True` on the wrapper preserves the Slider's
+        existing full-width behavior, which an unconfigured Container
+        would not.
+        """
+        return ft.Container(
+            expand=True,
+            theme=ft.Theme(
+                use_material3=True,
+                slider_theme=ft.SliderTheme(
+                    thumb_size=ft.Size.square(_CATEGORY_SWATCH_DIAMETER),
+                    year_2023=True,
+                ),
+            ),
+            content=slider,
         )
 
     def _build_filter_section_box(
@@ -1929,7 +1923,7 @@ class GraphCanvas(ft.Container):
                     ],
                 ),
                 self._simulation_strength_caption,
-                self._simulation_strength_slider,
+                self._themed_slider(self._simulation_strength_slider),
             ],
         )
 
@@ -1974,9 +1968,9 @@ class GraphCanvas(ft.Container):
             spacing=6,
             controls=[
                 self._min_zoom_caption,
-                self._min_zoom_slider,
+                self._themed_slider(self._min_zoom_slider),
                 self._max_zoom_caption,
-                self._max_zoom_slider,
+                self._themed_slider(self._max_zoom_slider),
                 ft.Row(
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     controls=[
@@ -2005,7 +1999,8 @@ class GraphCanvas(ft.Container):
             on_change_end=self._on_node_spacing_change_end,
         )
         return ft.Column(
-            spacing=2, controls=[self._node_spacing_caption, self._node_spacing_slider]
+            spacing=2,
+            controls=[self._node_spacing_caption, self._themed_slider(self._node_spacing_slider)],
         )
 
     def _build_display_settings_section(self) -> ft.Control:

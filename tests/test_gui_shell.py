@@ -1359,30 +1359,73 @@ def test_category_swatches_are_sized_and_spaced_per_the_tuned_constants() -> Non
     assert graph_canvas._CATEGORY_SWATCH_ROW_SPACING > graph_canvas._TYPE_CHECKBOX_ROW_SPACING
 
 
-def test_settings_panel_scopes_a_slider_thumb_size_matching_the_swatches() -> None:
+def test_themed_slider_wraps_directly_in_a_container_with_the_expected_theme() -> None:
     """Slider has no per-instance thumb-size property (unlike Switch/
-    Checkbox), so this goes through a nested `Container.theme` instead --
-    scoped to just the settings panel's own subtree, not the app-wide
-    theme, matching your explicit ask to reuse the swatch diameter.
+    Checkbox); wrapping it directly in its own themed Container -- no
+    control in between -- is what actually applied on the real build. A
+    Theme set several layers up the panel's own tree instead (the outer
+    settings-panel Container) did not visibly apply, confirmed on a real
+    device, not assumed.
     """
     canvas = GraphCanvas(_page_stub())
+    slider = ft.Slider(value=1, min=0, max=10)
 
-    panel_theme = canvas._settings_panel.theme
+    wrapped = canvas._themed_slider(slider)
 
-    assert panel_theme is not None
-    assert panel_theme.slider_theme is not None
-    thumb_size = panel_theme.slider_theme.thumb_size
-    assert thumb_size.width == graph_canvas._CATEGORY_SWATCH_DIAMETER
-    assert thumb_size.height == graph_canvas._CATEGORY_SWATCH_DIAMETER
+    assert isinstance(wrapped, ft.Container)
+    assert wrapped.content is slider  # the same instance, not a copy
+    assert wrapped.expand is True  # preserves the slider's full-width behavior
+    slider_theme = wrapped.theme.slider_theme
+    assert slider_theme.thumb_size.width == graph_canvas._CATEGORY_SWATCH_DIAMETER
+    assert slider_theme.thumb_size.height == graph_canvas._CATEGORY_SWATCH_DIAMETER
     # year_2023=True reverts to the classic circular thumb -- the M3
     # redesign's default "handle" shape (a pill/bar, not a circle)
     # doesn't shrink down cleanly via thumb_size alone.
-    assert panel_theme.slider_theme.year_2023 is True
+    assert slider_theme.year_2023 is True
     # Slider.year_2023's own docs: "If Theme.use_material3 is False,
     # then this property is ignored" -- explicit here so it's never at
-    # risk of silently no-op'ing regardless of how a nested Container
-    # .theme merges with its ancestor theme.
-    assert panel_theme.use_material3 is True
+    # risk of silently no-op'ing.
+    assert wrapped.theme.use_material3 is True
+
+
+def _find_container_wrapping(root: ft.Control, target: ft.Control) -> ft.Container | None:
+    """Small tree-search helper: finds a Container whose `.content` is
+    exactly `target`, walking `.content`/`.controls` recursively.
+    """
+    if isinstance(root, ft.Container) and root.content is target:
+        return root
+    children: list[ft.Control] = []
+    content = getattr(root, "content", None)
+    if content is not None:
+        children.append(content)
+    children.extend(getattr(root, "controls", None) or [])
+    for child in children:
+        found = _find_container_wrapping(child, target)
+        if found is not None:
+            return found
+    return None
+
+
+def test_every_settings_panel_slider_is_individually_themed() -> None:
+    """Locks in that all six real sliders (Degrees, Index Connections,
+    Simulation Strength, Min/Max Zoom, Node Spacing) are each wrapped
+    directly by `_themed_slider()` in the actual built tree, not just
+    that the helper itself works in isolation.
+    """
+    canvas = GraphCanvas(_page_stub())
+    sliders = [
+        canvas._degrees_slider,
+        canvas._index_edges_slider,
+        canvas._simulation_strength_slider,
+        canvas._min_zoom_slider,
+        canvas._max_zoom_slider,
+        canvas._node_spacing_slider,
+    ]
+    for slider in sliders:
+        wrapper = _find_container_wrapping(canvas._settings_panel, slider)
+        assert wrapper is not None, f"{slider} is not wrapped in a themed Container"
+        assert wrapper.theme is not None
+        assert wrapper.theme.slider_theme.year_2023 is True
 
 
 # --- Colors (Phase 25) -----------------------------------------------------
