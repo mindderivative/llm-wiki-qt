@@ -1370,8 +1370,8 @@ def test_build_theme_sets_a_page_wide_slider_thumb_size() -> None:
     built = theme.build_theme()
 
     assert built.slider_theme is not None
-    assert built.slider_theme.thumb_size.width == theme.CATEGORY_SWATCH_DIAMETER
-    assert built.slider_theme.thumb_size.height == theme.CATEGORY_SWATCH_DIAMETER
+    assert built.slider_theme.thumb_size.width == theme.SLIDER_THUMB_DIAMETER
+    assert built.slider_theme.thumb_size.height == theme.SLIDER_THUMB_DIAMETER
     # The app's real color scheme is untouched -- page.theme is the
     # actual live theme, not a "unique" reset that needs its own copy.
     assert built.color_scheme.primary == theme.ACCENT
