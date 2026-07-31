@@ -1385,14 +1385,14 @@ def test_themed_slider_wraps_directly_in_a_container_with_the_expected_theme() -
     slider_theme = wrapped.theme.slider_theme
     assert slider_theme.thumb_size.width == graph_canvas._CATEGORY_SWATCH_DIAMETER
     assert slider_theme.thumb_size.height == graph_canvas._CATEGORY_SWATCH_DIAMETER
-    # year_2023=True reverts to the classic circular thumb -- the M3
-    # redesign's default "handle" shape (a pill/bar, not a circle)
-    # doesn't shrink down cleanly via thumb_size alone.
-    assert slider_theme.year_2023 is True
-    # Slider.year_2023's own docs: "If Theme.use_material3 is False,
-    # then this property is ignored" -- explicit here so it's never at
-    # risk of silently no-op'ing.
     assert wrapped.theme.use_material3 is True
+    # A "unique" theme has no ambient color scheme to inherit -- without
+    # this, the slider's colors fell back to Flutter's stock blue instead
+    # of matching the app's real palette (confirmed on the real build).
+    color_scheme = wrapped.theme.color_scheme
+    assert color_scheme.primary == theme.ACCENT
+    assert color_scheme.surface == theme.APP_BG
+    assert color_scheme.error == theme.ERROR
 
 
 def _find_container_wrapping(root: ft.Control, target: ft.Control) -> ft.Container | None:
@@ -1432,8 +1432,9 @@ def test_every_settings_panel_slider_is_individually_themed() -> None:
         wrapper = _find_container_wrapping(canvas._settings_panel, slider)
         assert wrapper is not None, f"{slider} is not wrapped in a themed Container"
         assert wrapper.theme is not None
-        assert wrapper.theme.slider_theme.year_2023 is True
+        assert wrapper.theme.slider_theme.thumb_size.width == graph_canvas._CATEGORY_SWATCH_DIAMETER
         assert wrapper.theme_mode == ft.ThemeMode.DARK  # required to activate theme= at all
+        assert wrapper.theme.color_scheme.primary == theme.ACCENT
 
 
 # --- Colors (Phase 25) -----------------------------------------------------

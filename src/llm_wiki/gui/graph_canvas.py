@@ -1703,6 +1703,22 @@ class GraphCanvas(ft.Container):
         here matches this app's own permanent `page.theme_mode` (set in
         `app.py`), so nothing about the app's actual appearance changes
         -- this only exists to switch on the "unique theme" codepath.
+
+        Confirmed on the real build once `theme_mode` made the override
+        genuinely activate (the slider's color scheme visibly changed):
+        `year_2023=True` still left the thumb unchanged -- with
+        `thumb_size` now known to genuinely reach the widget, this means
+        `year_2023`'s classic thumb shape doesn't actually respect
+        `thumb_size` either (the opposite of what its docs implied), so
+        it's dropped here in favor of `thumb_size` alone against the
+        current (M3 "Handle") thumb shape -- untested until now, since
+        every earlier attempt was confounded by the missing `theme_mode`
+        and never got a clean read on `thumb_size` by itself. A "unique"
+        theme also has no ambient color scheme to inherit, which is why
+        the color genuinely changed (to Flutter's stock blue) rather than
+        matching this app's real palette -- `color_scheme` is set here to
+        the exact same values `theme.py`'s own `build_theme()` uses, so a
+        "unique" theme still looks identical to the app's real one.
         `expand=True` preserves the Slider's existing full-width
         behavior, which an unconfigured Container would not.
         """
@@ -1711,9 +1727,11 @@ class GraphCanvas(ft.Container):
             theme_mode=ft.ThemeMode.DARK,
             theme=ft.Theme(
                 use_material3=True,
+                color_scheme=ft.ColorScheme(
+                    primary=theme.ACCENT, surface=theme.APP_BG, error=theme.ERROR
+                ),
                 slider_theme=ft.SliderTheme(
                     thumb_size=ft.Size.square(_CATEGORY_SWATCH_DIAMETER),
-                    year_2023=True,
                 ),
             ),
             content=slider,
