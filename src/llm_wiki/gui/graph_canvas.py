@@ -196,6 +196,17 @@ def _fuzzy_match(query: str, text: str) -> bool:
     return difflib.SequenceMatcher(None, query, text).ratio() >= _FUZZY_MATCH_THRESHOLD
 
 
+def _ease_in_out(t: float) -> float:
+    """Smoothstep -- a standard, simple ease-in-out (zero slope at both
+    ends, symmetric), used by the reposition system (Post-25 fix #3) in
+    place of Flutter's cubic-bezier `Curves.easeInOut` (which would need
+    solving numerically for y given x): visually indistinguishable from
+    it for this purpose, with a closed-form formula.
+    """
+    t = max(0.0, min(1.0, t))
+    return t * t * (3.0 - 2.0 * t)
+
+
 class GraphCanvas(ft.Container):
     """Interactive canvas visualizing the vault's `[[wikilink]]` network."""
 
@@ -296,10 +307,15 @@ class GraphCanvas(ft.Container):
         # tick, so _simulation_tick() can report whether it changed.
         self._prev_dynamic_slugs: set[str] = set()
 
-        # Post-25 fix #2 -- constant-velocity reposition toward a known,
-        # fixed destination (a fresh Node Spacing layout, or a neighbor's
-        # new resting spot after a drag); see _reposition_tick().
+        # Post-25 fix #2 -- eased reposition toward a known, fixed
+        # destination (a fresh Node Spacing layout, or a neighbor's new
+        # resting spot after a drag); see _reposition_tick(). Post-25 fix
+        # #3 -- start position + linear progress (0..1, eased right before
+        # use) per node, so motion can ease in and out rather than moving
+        # at one constant speed.
         self._reposition_targets: dict[str, tuple[float, float]] = {}
+        self._reposition_start_positions: dict[str, tuple[float, float]] = {}
+        self._reposition_progress: dict[str, float] = {}
         self._reposition_active = False
 
         # Two layered canvases (Post-22 fix), not one: during a drag, only
@@ -359,6 +375,8 @@ class GraphCanvas(ft.Container):
         self._sim_active = False
         self._reposition_active = False
         self._reposition_targets = {}
+        self._reposition_start_positions = {}
+        self._reposition_progress = {}
         self._graph = graph.copy()
         self._page.run_thread(self._layout_worker)
 
@@ -689,40 +707,60 @@ class GraphCanvas(ft.Container):
         self._prev_dynamic_slugs = current_dynamic
         return changed
 
-    # --- Constant-velocity reposition (Post-25 fix #2) ------------------------
+    # --- Eased reposition (Post-25 fix #2, eased in fix #3) --------------------
     #
     # A separate, deliberately simpler movement system from the spring-mass
     # simulation above: it moves nodes toward a *known, fixed* destination
     # (a fresh Node Spacing layout, or a neighbor's new resting spot after
-    # a drag), not a live anchor -- so there's no overshoot/damping to tune,
-    # just distance -> a normalized direction -> a constant-speed step.
+    # a drag), not a live anchor -- so there's no overshoot/damping to tune.
+    # `_REPOSITION_SPEED` is an *average* speed used to derive each node's
+    # own duration from its total journey distance; progress advances
+    # linearly in time and only the *eased* progress drives position, via
+    # `_ease_in_out()` -- not Flet's own `ft.Animation`/`animate_offset`,
+    # which animates properties on real Controls (e.g. a Container's
+    # `offset`) and has no equivalent for a `flet.canvas` shape.
 
     def _reposition_tick(self) -> bool:
-        """One constant-velocity step for every node in
-        `self._reposition_targets`. Pure enough to unit test directly, same
-        `_simulation_tick()`-style split from the async loop that drives it.
+        """One eased step for every node in `self._reposition_targets`.
+        Pure enough to unit test directly, same `_simulation_tick()`-style
+        split from the async loop that drives it.
 
         Returns whether any node is still moving (the loop-continuation
         signal) -- nodes that reach their target, or that are currently
-        being dragged, are dropped from `self._reposition_targets` and
-        don't count.
+        being dragged, are dropped from `self._reposition_targets` (and
+        their start/progress state cleared) and don't count.
         """
         still_moving: dict[str, tuple[float, float]] = {}
-        step = _REPOSITION_SPEED * _SIM_TICK_DT
         for slug, target in self._reposition_targets.items():
             if slug == self._dragging:
-                continue  # a live drag always wins; its target is dropped, not resumed later
-            current = self._positions.get(slug)
-            if current is None:
+                # A live drag always wins; its target is dropped, not
+                # resumed later.
+                self._reposition_start_positions.pop(slug, None)
+                self._reposition_progress.pop(slug, None)
                 continue
-            dx, dy = target[0] - current[0], target[1] - current[1]
-            distance = math.hypot(dx, dy)
-            if distance <= _REPOSITION_SETTLE_DIST_EPSILON or step >= distance:
+            start = self._reposition_start_positions.get(slug)
+            if start is None:
+                continue
+            total_distance = math.dist(start, target)
+            if total_distance <= _REPOSITION_SETTLE_DIST_EPSILON:
                 self._positions[slug] = target
+                self._reposition_start_positions.pop(slug, None)
+                self._reposition_progress.pop(slug, None)
                 continue
+            progress = (
+                self._reposition_progress.get(slug, 0.0)
+                + _SIM_TICK_DT * _REPOSITION_SPEED / total_distance
+            )
+            if progress >= 1.0:
+                self._positions[slug] = target
+                self._reposition_start_positions.pop(slug, None)
+                self._reposition_progress.pop(slug, None)
+                continue
+            self._reposition_progress[slug] = progress
+            eased = _ease_in_out(progress)
             self._positions[slug] = (
-                current[0] + dx / distance * step,
-                current[1] + dy / distance * step,
+                start[0] + (target[0] - start[0]) * eased,
+                start[1] + (target[1] - start[1]) * eased,
             )
             still_moving[slug] = target
         self._reposition_targets = still_moving
@@ -749,11 +787,19 @@ class GraphCanvas(ft.Container):
         change reposition is still settling -- extends the same loop rather
         than stomping it) and (re)starts the tick loop if it isn't already
         running.
+
+        A *changed* target (new, or different from what was already in
+        flight) snapshots a fresh start position and resets progress to 0,
+        restarting the ease curve for that node specifically; re-merging
+        an *unchanged* target leaves an in-progress node's curve alone.
         """
         for slug, target in targets.items():
             # A brand-new node starts exactly at its target -- nothing to
             # move it from.
             self._positions.setdefault(slug, target)
+            if self._reposition_targets.get(slug) != target:
+                self._reposition_start_positions[slug] = self._positions[slug]
+                self._reposition_progress[slug] = 0.0
         self._reposition_targets.update(targets)
         if not self._reposition_active:
             self._reposition_active = True

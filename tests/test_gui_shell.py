@@ -1881,35 +1881,82 @@ def test_dragging_a_node_end_to_end_runs_and_settles_the_simulation() -> None:
 # --- Constant-velocity reposition (Post-25 fix #2) -------------------------
 
 
-def test_reposition_tick_moves_a_node_toward_its_target_at_constant_speed() -> None:
+def test_ease_in_out_endpoints_and_symmetry() -> None:
+    ease = graph_canvas._ease_in_out
+    assert ease(0.0) == 0.0
+    assert ease(1.0) == 1.0
+    assert ease(0.5) == pytest.approx(0.5)
+    # Symmetric around the midpoint.
+    for t in (0.1, 0.25, 0.4):
+        assert ease(t) == pytest.approx(1.0 - ease(1.0 - t))
+    # Monotonic.
+    samples = [ease(t / 10) for t in range(11)]
+    assert samples == sorted(samples)
+
+
+def test_reposition_tick_moves_slower_near_the_ends_than_the_middle() -> None:
+    """The actual ease-in-out signature: per-tick displacement should be
+    smaller in the first/last thirds of the journey than through the
+    middle third -- not a constant step throughout.
+    """
     canvas = GraphCanvas(_page_stub())
     canvas._positions = {"a": (0.0, 0.0)}
-    canvas._reposition_targets = {"a": (1000.0, 0.0)}
+    canvas._start_reposition({"a": (1000.0, 0.0)})
+    # ~100 ticks expected (1000px at the 300px/sec average speed, 1/30s
+    # per tick) -- capped well above that so the full journey, including
+    # the deceleration phase, is actually captured.
+    deltas = []
+    for _ in range(150):
+        before = canvas._positions["a"][0]
+        still_moving = canvas._reposition_tick()
+        deltas.append(canvas._positions["a"][0] - before)
+        if not still_moving:
+            break
 
-    still_moving = canvas._reposition_tick()
-
-    expected_step = graph_canvas._REPOSITION_SPEED * graph_canvas._SIM_TICK_DT
-    assert canvas._positions["a"] == pytest.approx((expected_step, 0.0))
-    assert still_moving is True
-    assert "a" in canvas._reposition_targets
+    assert len(deltas) >= 6  # enough samples for the shape to be meaningful
+    third = len(deltas) // 3
+    first_third = deltas[:third]
+    middle_third = deltas[third : 2 * third]
+    last_third = deltas[2 * third :]
+    assert sum(first_third) / len(first_third) < sum(middle_third) / len(middle_third)
+    assert sum(last_third) / len(last_third) < sum(middle_third) / len(middle_third)
+    assert canvas._positions["a"] == (1000.0, 0.0)  # still lands exactly on target
 
 
 def test_reposition_tick_snaps_exactly_once_within_the_settle_epsilon() -> None:
     canvas = GraphCanvas(_page_stub())
     canvas._positions = {"a": (99.0, 0.0)}
-    canvas._reposition_targets = {"a": (100.0, 0.0)}  # well under one tick's step
+    canvas._start_reposition({"a": (100.0, 0.0)})  # well under the settle epsilon
 
     still_moving = canvas._reposition_tick()
 
     assert canvas._positions["a"] == (100.0, 0.0)
     assert still_moving is False
     assert canvas._reposition_targets == {}
+    assert canvas._reposition_start_positions == {}
+    assert canvas._reposition_progress == {}
+
+
+def test_reposition_tick_completes_a_short_journey_in_one_tick() -> None:
+    """A journey well under one tick's worth of average-speed distance
+    still finishes in a single tick -- same graceful degradation to an
+    instant snap the old constant-velocity design had.
+    """
+    canvas = GraphCanvas(_page_stub())
+    canvas._positions = {"a": (0.0, 0.0)}
+    step = graph_canvas._REPOSITION_SPEED * graph_canvas._SIM_TICK_DT
+    canvas._start_reposition({"a": (step / 4, 0.0)})
+
+    still_moving = canvas._reposition_tick()
+
+    assert canvas._positions["a"] == (step / 4, 0.0)
+    assert still_moving is False
 
 
 def test_reposition_tick_skips_and_drops_a_node_currently_being_dragged() -> None:
     canvas = GraphCanvas(_page_stub())
     canvas._positions = {"a": (0.0, 0.0)}
-    canvas._reposition_targets = {"a": (1000.0, 0.0)}
+    canvas._start_reposition({"a": (1000.0, 0.0)})
     canvas._dragging = "a"
 
     still_moving = canvas._reposition_tick()
@@ -1917,6 +1964,36 @@ def test_reposition_tick_skips_and_drops_a_node_currently_being_dragged() -> Non
     assert canvas._positions["a"] == (0.0, 0.0)  # untouched -- the live drag wins
     assert still_moving is False
     assert canvas._reposition_targets == {}  # dropped, not resumed later
+    assert canvas._reposition_start_positions == {}
+    assert canvas._reposition_progress == {}
+
+
+def test_start_reposition_resets_progress_for_a_changed_target() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._positions = {"a": (0.0, 0.0)}
+    canvas._start_reposition({"a": (1000.0, 0.0)})
+    canvas._reposition_tick()
+    progress_before = canvas._reposition_progress["a"]
+    assert progress_before > 0.0
+
+    canvas._start_reposition({"a": (2000.0, 0.0)})  # a genuinely different target
+
+    assert canvas._reposition_progress["a"] == 0.0  # fresh curve from here
+    assert canvas._reposition_start_positions["a"] == canvas._positions["a"]
+
+
+def test_start_reposition_leaves_progress_untouched_for_the_same_target() -> None:
+    canvas = GraphCanvas(_page_stub())
+    canvas._positions = {"a": (0.0, 0.0)}
+    canvas._start_reposition({"a": (1000.0, 0.0)})
+    canvas._reposition_tick()
+    progress_before = canvas._reposition_progress["a"]
+    start_before = canvas._reposition_start_positions["a"]
+
+    canvas._start_reposition({"a": (1000.0, 0.0)})  # the same target, re-merged
+
+    assert canvas._reposition_progress["a"] == progress_before
+    assert canvas._reposition_start_positions["a"] == start_before
 
 
 def test_start_reposition_merges_into_an_already_active_reposition() -> None:
