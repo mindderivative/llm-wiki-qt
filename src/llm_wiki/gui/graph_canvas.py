@@ -51,9 +51,9 @@ _NODE_SPACING_SLIDER_RANGE = (1.0, 8.0)
 # Container's fixed size is what actually tightens the box too. Starting
 # values, same "tune against the real UI" framing as every other visual
 # constant in this file.
-_COMPACT_SWITCH_SCALE = 0.7
-_COMPACT_SWITCH_WIDTH = 36.0
-_COMPACT_SWITCH_HEIGHT = 22.0
+_COMPACT_SWITCH_SCALE = 0.65
+_COMPACT_SWITCH_WIDTH = 33.0
+_COMPACT_SWITCH_HEIGHT = 20.0
 # Nominal layout space; the canvas scales to its real size on first resize.
 _BASE_WIDTH = 900.0
 _BASE_HEIGHT = 560.0
